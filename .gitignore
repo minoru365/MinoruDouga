@@ -1,0 +1,18 @@
+# 実行ログ(実行のたびに追記される)
+minoru_douga.log
+
+# Python キャッシュ
+__pycache__/
+*.py[cod]
+
+# テスト用に生成した素材・出力
+test/
+
+# Claude Code のローカル設定(マシン固有の許可設定など)
+.claude/settings.local.json
+
+# OS / エディタ
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
