@@ -121,6 +121,9 @@ def manifest_from_dict(data: Mapping[str, Any]) -> JobManifest:
             f"unsupported schema_version: {data.get('schema_version')}"
         )
     try:
+        steps = data.get("steps", {})
+        if not isinstance(steps, Mapping):
+            raise TypeError("steps must be a mapping")
         return JobManifest(
             schema_version=SCHEMA_VERSION,
             job_id=str(data["job_id"]),
@@ -135,7 +138,7 @@ def manifest_from_dict(data: Mapping[str, Any]) -> JobManifest:
                 name: StepRecord(
                     **{**step, "status": StepStatus(step["status"])}
                 )
-                for name, step in data.get("steps", {}).items()
+                for name, step in steps.items()
             },
             artifacts=[
                 ArtifactRecord(**item) for item in data.get("artifacts", [])

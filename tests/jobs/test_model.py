@@ -41,6 +41,14 @@ def test_unknown_schema_is_rejected():
         manifest_from_dict(data)
 
 
+def test_malformed_steps_are_rejected_as_manifest_error():
+    manifest = new_manifest("demo", JobMode.TRANSCRIBE)
+    data = manifest_to_dict(manifest)
+    data["steps"] = []
+    with pytest.raises(ManifestError, match="invalid manifest"):
+        manifest_from_dict(data)
+
+
 def test_all_fixed_modes_are_declared():
     assert {mode.value for mode in JobMode} == {
         "beat-sync",
