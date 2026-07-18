@@ -10,11 +10,11 @@ def test_version_prints_package_version(capsys):
     assert capsys.readouterr().out.strip() == "0.1.0"
 
 
-def test_empty_argv_prints_help_before_gui_is_added(capsys):
+def test_empty_argv_launches_gui(monkeypatch):
+    calls = []
+    monkeypatch.setattr("minoru_studio.cli.launch_gui", lambda: calls.append("gui"))
     assert main([]) == 0
-    output = capsys.readouterr().out
-    assert "usage:" in output
-    assert "MinoruStudio" in output
+    assert calls == ["gui"]
 
 
 def test_doctor_exit_code_reflects_report(monkeypatch):

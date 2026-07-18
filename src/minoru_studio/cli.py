@@ -9,6 +9,12 @@ from minoru_studio.job_commands import create_job_command, inspect_job_command
 from minoru_studio.jobs.model import JobMode
 
 
+def launch_gui() -> None:
+    from minoru_studio.gui import launch_gui as run_gui
+
+    run_gui()
+
+
 def _doctor_command(args: argparse.Namespace) -> int:
     report = run_doctor()
     print(render_doctor(report, as_json=args.as_json))
@@ -51,6 +57,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     handler = getattr(args, "handler", None)
     if handler is None:
-        parser.print_help()
+        launch_gui()
         return 0
     return int(handler(args))
