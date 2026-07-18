@@ -10,11 +10,11 @@ from minoru_studio.jobs.store import JobStore
 
 def create_job_command(args: argparse.Namespace) -> int:
     job_dir = JobStore().create(
-        root=Path(args.output_dir),
+        root=Path(args.output_dir).resolve(),
         name=args.name,
         mode=JobMode(args.mode),
     )
-    print(job_dir)
+    print(job_dir.resolve())
     return 0
 
 
