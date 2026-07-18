@@ -7,15 +7,13 @@ from pathlib import Path
 from minoru_studio.redaction import redact_text
 
 
-class RedactingFilter(logging.Filter):
+class RedactingFormatter(logging.Formatter):
     def __init__(self, secrets: Iterable[str] = ()):
-        super().__init__()
+        super().__init__("%(asctime)s %(levelname)s %(message)s")
         self.secrets = tuple(secrets)
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = redact_text(str(record.getMessage()), self.secrets)
-        record.args = ()
-        return True
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_text(super().format(record), self.secrets)
 
 
 def configure_job_logger(
@@ -30,13 +28,11 @@ def configure_job_logger(
     for handler in list(logger.handlers):
         handler.close()
         logger.removeHandler(handler)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    redactor = RedactingFilter(secrets)
+    formatter = RedactingFormatter(secrets)
     for handler in (
         logging.FileHandler(logs_dir / "run.log", encoding="utf-8"),
         logging.StreamHandler(),
     ):
         handler.setFormatter(formatter)
-        handler.addFilter(redactor)
         logger.addHandler(handler)
     return logger
