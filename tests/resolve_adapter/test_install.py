@@ -1,4 +1,6 @@
 import ast
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -6,9 +8,17 @@ from pathlib import Path
 def test_installer_can_copy_to_disposable_roots(tmp_path):
     app_root = tmp_path / "app"
     utility = tmp_path / "utility"
+    powershell = shutil.which("pwsh")
+    assert powershell is not None
+    child_environment = os.environ.copy()
+    child_environment["APPDATA"] = str(tmp_path / "roaming")
+    child_environment["LOCALAPPDATA"] = str(tmp_path / "local")
+    for key in list(child_environment):
+        if key.lower() == "path":
+            child_environment[key] = ""
     result = subprocess.run(
         [
-            "pwsh",
+            powershell,
             "-NoProfile",
             "-File",
             "install.ps1",
@@ -22,6 +32,7 @@ def test_installer_can_copy_to_disposable_roots(tmp_path):
         encoding="utf-8",
         capture_output=True,
         check=False,
+        env=child_environment,
     )
     assert result.returncode == 0, result.stderr
     assert (
