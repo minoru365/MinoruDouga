@@ -8,6 +8,13 @@ from uuid import uuid4
 
 
 SCHEMA_VERSION = 1
+_TRANSCRIBE_STEP_ORDER = (
+    "probe-input",
+    "extract-audio",
+    "transcribe",
+    "render-artifacts",
+    "render-preview",
+)
 
 
 class ManifestError(ValueError):
@@ -78,6 +85,7 @@ class JobManifest:
     artifacts: list[ArtifactRecord] = field(default_factory=list)
     last_error: str | None = None
     resolve_applications: list[dict[str, Any]] = field(default_factory=list)
+    tools: dict[str, str] = field(default_factory=dict)
 
 
 def _utc_text(now: datetime | None = None) -> str:
@@ -138,13 +146,20 @@ def manifest_from_dict(data: Mapping[str, Any]) -> JobManifest:
                 name: StepRecord(
                     **{**step, "status": StepStatus(step["status"])}
                 )
-                for name, step in steps.items()
+                for name, step in _ordered_steps(steps)
             },
             artifacts=[
                 ArtifactRecord(**item) for item in data.get("artifacts", [])
             ],
             last_error=data.get("last_error"),
             resolve_applications=list(data.get("resolve_applications", [])),
+            tools=dict(data.get("tools", {})),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ManifestError(f"invalid manifest: {exc}") from exc
+
+
+def _ordered_steps(steps: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    known = [name for name in _TRANSCRIBE_STEP_ORDER if name in steps]
+    remaining = [name for name in steps if name not in _TRANSCRIBE_STEP_ORDER]
+    return [(name, steps[name]) for name in (*known, *remaining)]

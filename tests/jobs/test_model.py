@@ -33,6 +33,17 @@ def test_manifest_round_trip_preserves_nested_enums():
     assert restored.steps["prepare"].status is StepStatus.RUNNING
 
 
+def test_manifest_without_tools_remains_readable_and_new_tools_round_trip():
+    manifest = new_manifest("voice", JobMode.TRANSCRIBE)
+    data = manifest_to_dict(manifest)
+    data.pop("tools")
+
+    assert manifest_from_dict(data).tools == {}
+
+    manifest.tools = {"python": "3.12.0", "faster-whisper": "1.2.1"}
+    assert manifest_from_dict(manifest_to_dict(manifest)).tools == manifest.tools
+
+
 def test_unknown_schema_is_rejected():
     manifest = new_manifest("demo", JobMode.TRANSCRIBE)
     data = manifest_to_dict(manifest)
