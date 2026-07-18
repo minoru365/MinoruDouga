@@ -633,10 +633,11 @@ def launch_gui(controller: LauncherController | None = None) -> None:
 
     def update_mode_fields(event=None) -> None:
         nonlocal displayed_mode
-        mode_defaults[displayed_mode] = {
-            "name": name_var.get(),
-            "output_dir": output_var.get(),
-        }
+        if displayed_mode in mode_defaults:
+            mode_defaults[displayed_mode] = {
+                "name": name_var.get(),
+                "output_dir": output_var.get(),
+            }
         selected_mode = mode_var.get()
         if selected_mode in mode_defaults:
             name_var.set(mode_defaults[selected_mode]["name"])

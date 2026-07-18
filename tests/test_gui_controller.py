@@ -135,6 +135,7 @@ def test_opened_failed_transcription_resumes_without_validating_or_saving_new_fo
     class Widget:
         def __init__(self, *args, **kwargs):
             self.kwargs = kwargs
+            self.bindings = {}
             self.command = kwargs.get("command")
             self.text = kwargs.get("text")
             self.states = []
@@ -148,7 +149,8 @@ def test_opened_failed_transcription_resumes_without_validating_or_saving_new_fo
         pack = grid
         grid_remove = grid
         columnconfigure = grid
-        bind = grid
+        def bind(self, event, callback):
+            self.bindings[event] = callback
 
         def state(self, values):
             self.states.extend(values)
@@ -210,15 +212,32 @@ def test_opened_failed_transcription_resumes_without_validating_or_saving_new_fo
     monkeypatch.setattr(gui.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(gui, "probe_media", lambda path: pytest.fail("resume must not probe new input"))
     monkeypatch.setattr(gui, "save_transcribe_settings", lambda values: pytest.fail("resume must not save new form"))
+    monkeypatch.setattr(gui, "load_beat_sync_settings", lambda: {"name": "beat-name", "output_dir": "beat-output"})
+    monkeypatch.setattr(gui, "load_transcribe_settings", lambda: {"name": "transcribe-name", "output_dir": "transcribe-output"})
 
     gui.launch_gui(Controller())
+    mode_box = next(widget for widget in widgets if "values" in widget.kwargs and len(widget.kwargs["values"]) == len(JobMode))
+    name_entry = next(
+        widget
+        for widget in widgets
+        if "textvariable" in widget.kwargs
+        and widget.kwargs["textvariable"].get() == "beat-name"
+    )
+    mode_var = mode_box.kwargs["textvariable"]
+    mode_var.set(JobMode.REPO_DEMO.value)
+    mode_box.bindings["<<ComboboxSelected>>"]()
+    mode_var.set(JobMode.BEAT_SYNC.value)
+    mode_box.bindings["<<ComboboxSelected>>"]()
+    assert name_entry.kwargs["textvariable"].get() == "beat-name"
+    mode_var.set(JobMode.TRANSCRIBE.value)
+    mode_box.bindings["<<ComboboxSelected>>"]()
+    assert name_entry.kwargs["textvariable"].get() == "transcribe-name"
     buttons["既存ジョブを開く"].command()
     buttons["文字起こしを再開"].command()
 
     assert calls[0][0] == failed_job
     assert "disabled" in buttons["音ハメ準備を開始"].states
     assert "disabled" in buttons["既存ジョブを開く"].states
-    mode_box = next(widget for widget in widgets if "values" in widget.kwargs and len(widget.kwargs["values"]) == len(JobMode))
     assert "disabled" in mode_box.states
     buttons["文字起こしを開始"].command()
     assert len(calls) == 1
