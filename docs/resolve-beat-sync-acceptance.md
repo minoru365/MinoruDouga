@@ -171,22 +171,32 @@ Compare-Object `
 
 ## 11. 合否表
 
+実機実行日: 2026-07-18。破棄可能プロジェクト
+`MinoruStudio Acceptance 20260718` で確認しました。
+
 | # | シナリオ | 合格条件 | Pass / Fail | Notes |
 |---|---|---|---|---|
-| 1 | 環境記録 | product/version/project ID/timeline rateを記録 |  |  |
-| 2 | install/menu | adapterとUtility pathを記録し、メニュー表示、legacy残存 |  |  |
-| 3 | 写真のみ | 1 invocationでreadyへ進み、新規timelineを適用 |  |  |
-| 4 | mixed In-only/In-Out | exclusive Outを記録し、resume成功 |  |  |
-| 5 | still mismatch/retry | required値表示、設定変更、写真だけ再import |  |  |
-| 6 | 配置 | A1 BGM、V1-only、青marker、±1frame |  |  |
-| 7 | 再適用 | `-002` suffixで新規timeline作成 |  |  |
-| 8 | cancel | ready維持、final timeline増加なし |  |  |
-| 9 | Fake部分失敗 | partial objectsとtraceを保持 |  |  |
-| 10 | sentinel | 既存timelineが変更されていない |  |  |
-| 11 | input hashes | 事前・事後SHA-256が一致 |  |  |
-| 12 | application evidence | detail path、bin ID、timeline IDを収集 |  |  |
+| 1 | 環境記録 | product/version/project ID/timeline rateを記録 | Pass | DaVinci Resolve 20.0.1.6、project `5610d7b8-6c55-4297-a6ec-f59dfb4dee60`、24 fps |
+| 2 | install/menu | adapterとUtility pathを記録し、メニュー表示、legacy残存 | Pass | `%LOCALAPPDATA%\MinoruStudio\resolve_adapter` と `%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility\MinoruStudio.py`。Utilityメニューから実行。legacy hash・更新時刻不変 |
+| 3 | 写真のみ | 1 invocationでreadyへ進み、新規timelineを適用 | Pass | attempt `b236442c-9116-4c6e-b2ab-e23aed13170e`、`Acceptance Photo-002`、12配置、失敗0 |
+| 4 | mixed In-only/In-Out | exclusive Outを記録し、resume成功 | Pass | attempt `487df17e-a4fd-4860-a8b3-f2575f2638b3`。In-only `[15,90)`、In/Out `[15,76)` を保持してresume |
+| 5 | still mismatch/retry | required値表示、設定変更、写真だけ再import | Pass | 写真12/実測108、混在48/実測12を検出。再測定後12/12、48/48。動画IDを保持し写真IDだけ更新 |
+| 6 | 配置 | A1 BGM、V1-only、青marker、±1frame | Pass | 写真12カット・混在3カットを目視。両applicationともgap/correction/mismatch 0 |
+| 7 | 再適用 | `-002` suffixで新規timeline作成 | Pass | `Acceptance Photo` ID `679c1708-85bf-4947-9572-24ba0d868f5f` と `Acceptance Photo-002` ID `dd441e2e-a208-4372-9d49-31bb07feca69` |
+| 8 | cancel | ready維持、final timeline増加なし | Pass | attempt `9f3d52c8-23f0-4cda-ab9d-7cda648affbe` はready・timeline null、`apply.cancelled` を記録 |
+| 9 | Fake部分失敗 | partial objectsとtraceを保持 | Pass | `test_mid_apply_failure_keeps_partial_timeline_and_fails_attempt` とResolve log testで確認 |
+| 10 | sentinel | 既存timelineが変更されていない | Pass | `SENTINEL-DO-NOT-TOUCH` は同名、V1 0クリップ、A1空のまま目視確認 |
+| 11 | input hashes | 事前・事後SHA-256が一致 | Pass | BGM、写真3、動画2の全6ファイルが一致 |
+| 12 | application evidence | detail path、bin ID、timeline IDを収集 | Pass | 各jobの`resolve/applications/*.json`と`logs/resolve.log`を確認。混在timeline ID `45511383-2a0d-458c-bb71-0249abdf7882` |
 
 1つでもFailまたは未確認なら、バージョンを0.2.0へ昇格しません。
+
+実機application evidence:
+
+- 写真still retry: `resolve/applications/ad8a00e6-8709-4d29-b625-41b49fc32994.json`、bin `c7a92815-24a1-4a18-8f8d-349426ea138f`、timeline `679c1708-85bf-4947-9572-24ba0d868f5f`
+- 写真one-invocation: `resolve/applications/b236442c-9116-4c6e-b2ab-e23aed13170e.json`、bin `ea26dc73-b6df-4bb2-83b0-30ac3f02f2a4`、timeline `dd441e2e-a208-4372-9d49-31bb07feca69`
+- mixed cancel: `resolve/applications/9f3d52c8-23f0-4cda-ab9d-7cda648affbe.json`、bin `a7c6a208-7982-4b43-a428-2d6c776f2e03`、timelineなし
+- mixed apply: `resolve/applications/487df17e-a4fd-4860-a8b3-f2575f2638b3.json`、bin `3f7d9ae3-8830-47b0-b338-ef361346c8f6`、timeline `45511383-2a0d-458c-bb71-0249abdf7882`
 
 ## 12. ソース素材を含めず証跡を収集する
 

@@ -3,9 +3,8 @@
 MinoruStudioは、MinoruDougaの音ハメを包含し、字幕、読み上げ、リポジトリの
 デモ動画制作などを段階的に扱うWindows向けローカル制作ツールです。
 
-現在は音ハメの準備工程まで実装しています。BGMを解析し、静止画・動画の
-順序とカット位置を確定した `.media-job` を作成できます。DaVinci Resolveへ
-実際にタイムラインを作る処理は次段階のResolve内アダプターで追加します。
+BGMを解析して静止画・動画の順序とカット位置を確定した `.media-job` を作り、
+Resolve内アダプターから新しいタイムラインとして安全に適用できます。
 
 ## 開発環境
 
@@ -13,6 +12,25 @@ MinoruStudioは、MinoruDougaの音ハメを包含し、字幕、読み上げ、
 uv sync --locked --dev
 uv run pytest -q
 ```
+
+## 最短手順
+
+最初にadapterとResolve Utility launcherを配置します。
+
+```powershell
+.\install.ps1
+```
+
+1. 下記CLIまたは引数なしGUIで音ハメjobを準備する
+2. Resolveで適用先プロジェクトを開く
+3. **ワークスペース → スクリプト → MinoruStudio** を開く
+4. `succeeded` の `.media-job` を選び、素材を取り込む
+5. 動画がある場合はapplication binの動画へIn/Outを設定し、MinoruStudioを再実行する
+6. 指示された場合だけResolveの標準スチル長を変更し、再測定する
+7. 最終確認を承認し、新規timelineのA1、V1、青markerを確認する
+
+既存timelineは上書きせず、同名なら `-002` 以降の連番を付けます。処理記録は
+各jobの `resolve/applications` と `logs/resolve.log` に保存されます。
 
 ## 音ハメjobを準備する
 
@@ -66,13 +84,18 @@ uv run minoru-studio
 `jobs create` は各固定モードの空の `pending` jobを作る基盤コマンドです。
 音ハメ準備には上記の専用 `beat-sync` コマンドまたはGUIを使用してください。
 
-現段階のMinoruStudioはResolveプロジェクトを変更しません。実際の
-タイムライン生成が必要な場合は、下記の既存MinoruDougaをフォールバックとして
-使用してください。
+Resolveへ適用するときは、準備済みjobを選んで必ず最終確認を承認します。
+途中のIn/Out設定やスチル長変更が必要な場合は状態をjobへ保存し、次のUtility
+呼び出しから再開します。
 
 ---
 
-# MinoruDouga（Resolve実適用のフォールバック） 🎵🎬
+## Legacy fallback
+
+既存のMinoruDougaは自動アンインストールされません。導入済み環境では、従来の
+**ワークスペース → スクリプト → MinoruDouga** も引き続き利用できます。
+
+### MinoruDouga 🎵🎬
 
 写真・動画・音楽を渡すと、曲のビートに合わせてテンポよくカットした
 タイムラインを DaVinci Resolve 上に自動生成するツール。
@@ -83,7 +106,7 @@ uv run minoru-studio
 > 設定ダイアログで音楽・素材フォルダ・カット間隔を指定すると、ビートに
 > 合わせてカットされたタイムラインが生成される(各カット位置に青マーカー)。
 
-## 仕組み
+### 仕組み
 
 ```
 音楽ファイル ──→ analyze_beats.py (librosa でビート解析・システム Python)
@@ -100,16 +123,13 @@ Resolve スクリプトメニュー ──→ minoru_douga.py
 無償版 Resolve でも動く(外部からの API 操作ではなく、Resolve 内の
 スクリプトメニューから実行する方式のため)。
 
-## セットアップ
+### セットアップ
 
-```powershell
-.\install.ps1
-```
+現在の `.\install.ps1` はMinoruStudioを配置します。既存の
+`MinoruDouga.py` は削除・上書きしないため、導入済み環境のlegacy fallbackは
+そのまま残ります。
 
-これで依存ライブラリのインストールと、ランチャー
-(`scripts\MinoruDouga.py`)の Resolve スクリプトフォルダへの配置が行われる。
-
-## 使い方
+### 使い方
 
 1. 素材(写真・動画)を 1 つのフォルダにまとめる
 2. Resolve でプロジェクトを開く
@@ -118,14 +138,14 @@ Resolve スクリプトメニュー ──→ minoru_douga.py
 
 ログは **ワークスペース → コンソール** に出る。
 
-## オプション
+### オプション
 
 | 項目 | 説明 |
 |---|---|
 | カット間隔 | 何拍ごとに切り替えるか。「自動」は全素材がほぼ一巡する間隔を計算 |
 | 並び順 | ファイル名 昇順 / ランダム |
 
-## 動画のハイライト指定
+### 動画のハイライト指定
 
 使ってほしい場面がある動画は、実行前に **メディアプールでダブルクリック →
 ソースビューアでその場面の頭に In 点(`I`)を打つだけ**でよい。
@@ -135,7 +155,7 @@ Out 点(`O`)も打った場合は「この範囲の中だけを使う」とい�
 
 設定は `%APPDATA%\MinoruDouga\settings.json` に記憶される。
 
-## 注意・既知の制限
+### 注意・既知の制限
 
 - **対応音楽形式**: wav / flac / mp3 / ogg。m4a・aac は ffmpeg が必要
   (`winget install Gyan.FFmpeg`)
@@ -148,7 +168,7 @@ Out 点(`O`)も打った場合は「この範囲の中だけを使う」とい�
 - クリップが毎回 1 フレームずれる場合は `src/minoru_douga.py` の
   `END_FRAME_INCLUSIVE` を反転させる
 
-## 開発メモ
+### 開発メモ
 
 - 本体: [src/minoru_douga.py](src/minoru_douga.py) — ランチャー経由で毎回 reload されるので、編集が即反映される
 - ビート解析: [src/analyze_beats.py](src/analyze_beats.py) — 単体でも実行可能
