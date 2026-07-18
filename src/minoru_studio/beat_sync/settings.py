@@ -24,6 +24,34 @@ def default_settings_path():
 
 
 def load_settings(path=None):
+    payload = _read(path)
+    section = payload.get("beat_sync")
+    if isinstance(section, dict):
+        return _allowed(section)
+    return _allowed(payload)
+
+
+def save_settings(values, path=None):
+    target = Path(path) if path else default_settings_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    latest = _read(target)
+    transcribe = latest.get("transcribe")
+    if not isinstance(transcribe, dict):
+        transcribe = {}
+    _write(
+        target,
+        {
+            "beat_sync": _allowed(values),
+            "transcribe": transcribe,
+        },
+    )
+
+
+def _allowed(values):
+    return {key: values[key] for key in ALLOWED_KEYS if key in values}
+
+
+def _read(path):
     target = Path(path) if path else default_settings_path()
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
@@ -31,17 +59,15 @@ def load_settings(path=None):
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {key: payload[key] for key in ALLOWED_KEYS if key in payload}
+    return payload if isinstance(payload, dict) else {}
 
 
-def save_settings(values, path=None):
-    target = Path(path) if path else default_settings_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
+def _write(target, payload):
     temporary = target.parent / f".config-{uuid4()}.tmp"
     try:
         temporary.write_text(
             json.dumps(
-                {key: values[key] for key in ALLOWED_KEYS if key in values},
+                payload,
                 ensure_ascii=False,
                 indent=2,
                 sort_keys=True,
