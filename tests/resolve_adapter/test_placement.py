@@ -18,6 +18,10 @@ def test_fractional_rates_and_df_suffix_are_exact():
     assert milliseconds_to_frame(1_000, (24000, 1001)) == 24
 
 
+def test_integral_rate_with_resolve_decimal_suffix_is_exact():
+    assert parse_rate("24.0") == (24, 1)
+
+
 def test_duplicate_frame_conversion_is_rejected():
     with pytest.raises(ValueError, match="strictly increasing"):
         convert_cut_points([0, 1, 1000], (24, 1))

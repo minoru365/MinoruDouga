@@ -24,6 +24,8 @@ def parse_rate(value):
         str(value).strip(),
         flags=re.IGNORECASE,
     )
+    if label.endswith(".0") and label[:-2] in KNOWN_RATES:
+        label = label[:-2]
     if label not in KNOWN_RATES:
         raise ValueError("unsupported frame rate: {0}".format(value))
     return KNOWN_RATES[label]
