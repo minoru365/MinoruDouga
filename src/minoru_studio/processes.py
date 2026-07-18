@@ -15,6 +15,13 @@ _SECRET_COMMAND_ASSIGNMENT = re.compile(
 )
 
 
+class ProcessTimeoutError(TimeoutError):
+    def __init__(self, timeout_s: float, display_command: str) -> None:
+        self.timeout_s = timeout_s
+        self.display_command = display_command
+        super().__init__(f"process timed out after {timeout_s}s: {display_command}")
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessResult:
     returncode: int
@@ -36,23 +43,30 @@ def run_process(
 ) -> ProcessResult:
     if not args:
         raise ValueError("args must not be empty")
+    command_args = list(args)
     secret_values = tuple(secrets)
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    completed = subprocess.run(
-        list(args),
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_s,
-        shell=False,
-        check=False,
-        creationflags=creationflags,
-    )
     display = subprocess.list2cmdline(
-        [_redact_display_argument(argument, secret_values) for argument in args]
+        [_redact_display_argument(argument, secret_values) for argument in command_args]
     )
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            command_args,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+            shell=False,
+            check=False,
+            creationflags=creationflags,
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    if timed_out:
+        raise ProcessTimeoutError(timeout_s, display) from None
     return ProcessResult(
         returncode=completed.returncode,
         stdout=completed.stdout,
