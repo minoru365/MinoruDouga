@@ -8,6 +8,11 @@ from minoru_studio.beat_sync.commands import beat_sync_command, parse_every_n
 from minoru_studio.doctor import render_doctor, run_doctor
 from minoru_studio.job_commands import create_job_command, inspect_job_command
 from minoru_studio.jobs.model import JobMode
+from minoru_studio.transcribe.commands import (
+    _CreateOptionAction,
+    parse_language,
+    transcribe_command,
+)
 
 
 def launch_gui() -> None:
@@ -88,6 +93,48 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.set_defaults(
         handler=beat_sync_command,
         command_parser=beat_sync_parser,
+    )
+
+    transcribe_parser = subparsers.add_parser(
+        "transcribe",
+        help="create or resume a local transcription job",
+    )
+    transcribe_parser.set_defaults(
+        handler=transcribe_command,
+        command_parser=transcribe_parser,
+        _transcribe_create_options=frozenset(),
+    )
+    transcribe_parser.add_argument("input_or_action")
+    transcribe_parser.add_argument("resume_job", nargs="?")
+    transcribe_parser.add_argument(
+        "-Name", "--name", dest="name", action=_CreateOptionAction,
+    )
+    transcribe_parser.add_argument(
+        "-OutputDir", "--output-dir", dest="output_dir", action=_CreateOptionAction,
+    )
+    transcribe_parser.add_argument(
+        "-Model", "--model", choices=("small", "medium"), default="small",
+        action=_CreateOptionAction,
+    )
+    transcribe_parser.add_argument(
+        "-Language", "--language", type=parse_language, default="ja",
+        action=_CreateOptionAction,
+    )
+    transcribe_parser.add_argument(
+        "-Normalize", "--normalize", action=_CreateOptionAction,
+        nargs=0, const=True, default=False,
+    )
+    transcribe_parser.add_argument(
+        "-Denoise", "--denoise", action=_CreateOptionAction,
+        nargs=0, const=True, default=False,
+    )
+    transcribe_parser.add_argument(
+        "-Preview", "--preview", action=_CreateOptionAction,
+        nargs=0, const=True, default=False,
+    )
+    transcribe_parser.add_argument(
+        "-AllowModelDownload", "--allow-model-download",
+        dest="allow_model_download", action="store_true",
     )
     return parser
 
