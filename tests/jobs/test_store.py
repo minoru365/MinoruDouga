@@ -1,6 +1,15 @@
 import json
 
-from minoru_studio.jobs.model import JobMode, JobStatus, StepRecord, StepStatus
+import pytest
+
+from minoru_studio.jobs.lock import JobLock
+from minoru_studio.jobs.model import (
+    JobMode,
+    JobStatus,
+    StepRecord,
+    StepStatus,
+    manifest_to_dict,
+)
 from minoru_studio.jobs.store import JobStore, fingerprint_file, safe_job_name
 
 
@@ -60,3 +69,57 @@ def test_load_preserves_running_state_while_live_lock_is_held(tmp_path):
     store.save(job_dir, manifest)
     with store.locked(job_dir):
         assert store.load(job_dir).status is JobStatus.RUNNING
+
+
+def test_save_write_failure_leaves_no_temporary_or_lock_file(tmp_path, monkeypatch):
+    store = JobStore()
+    job_dir = store.create(tmp_path, "demo", JobMode.TRANSCRIBE)
+    manifest = store.load(job_dir)
+    original_write_text = type(job_dir).write_text
+
+    def fail_manifest_temp(path, *args, **kwargs):
+        if path.name.startswith(".job-"):
+            raise OSError("simulated write failure")
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(job_dir), "write_text", fail_manifest_temp)
+    with pytest.raises(OSError, match="simulated write failure"):
+        store.save(job_dir, manifest)
+    assert not list(job_dir.glob("*.tmp"))
+    assert not (job_dir / "job.lock").exists()
+
+
+def test_create_failure_removes_only_the_new_partial_job_directory(tmp_path, monkeypatch):
+    store = JobStore()
+
+    def fail_write(*args, **kwargs):
+        raise OSError("simulated initialization failure")
+
+    monkeypatch.setattr(store, "_write_manifest", fail_write)
+    with pytest.raises(OSError, match="simulated initialization failure"):
+        store.create(tmp_path, "demo", JobMode.TRANSCRIBE)
+    assert not list(tmp_path.glob("demo*.media-job"))
+
+
+def test_recovery_rereads_after_acquiring_lock_before_mutating(tmp_path, monkeypatch):
+    store = JobStore()
+    job_dir = store.create(tmp_path, "demo", JobMode.TRANSCRIBE)
+    manifest = store.load(job_dir)
+    manifest.status = JobStatus.RUNNING
+    store.save(job_dir, manifest)
+    original_acquire = JobLock.acquire
+    changed = False
+
+    def update_then_acquire(lock):
+        nonlocal changed
+        if not changed:
+            changed = True
+            latest = store.load(job_dir, recover_interrupted=False)
+            latest.status = JobStatus.SUCCEEDED
+            (job_dir / "job.json").write_text(
+                json.dumps(manifest_to_dict(latest)), encoding="utf-8"
+            )
+        return original_acquire(lock)
+
+    monkeypatch.setattr(JobLock, "acquire", update_then_acquire)
+    assert store.load(job_dir).status is JobStatus.SUCCEEDED

@@ -4,13 +4,14 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from minoru_studio.jobs.lock import JobLock, lock_is_active
+from minoru_studio.jobs.lock import JobLock, JobLockedError
 from minoru_studio.jobs.model import (
     InputRef,
     JobManifest,
@@ -84,13 +85,17 @@ class JobStore:
                 sequence += 1
                 continue
             break
-        for child in ("inputs", "outputs", "work", "logs", "resolve"):
-            (candidate / child).mkdir()
-        manifest = new_manifest(base, mode)
-        manifest.inputs = input_refs
-        manifest.settings = dict(settings or {})
-        self.save(candidate, manifest)
-        return candidate
+        try:
+            for child in ("inputs", "outputs", "work", "logs", "resolve"):
+                (candidate / child).mkdir()
+            manifest = new_manifest(base, mode)
+            manifest.inputs = input_refs
+            manifest.settings = dict(settings or {})
+            self.save(candidate, manifest)
+            return candidate
+        except BaseException:
+            shutil.rmtree(candidate)
+            raise
 
     def load(
         self,
@@ -98,24 +103,30 @@ class JobStore:
         recover_interrupted: bool = True,
     ) -> JobManifest:
         job_dir = Path(job_dir).resolve(strict=True)
-        data = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
-        manifest = manifest_from_dict(data)
-        if (
-            recover_interrupted
-            and manifest.status is JobStatus.RUNNING
-            and not lock_is_active(job_dir)
-        ):
-            manifest.status = JobStatus.INTERRUPTED
-            for step in manifest.steps.values():
-                if step.status is StepStatus.RUNNING:
-                    step.status = StepStatus.INTERRUPTED
-            self.save(job_dir, manifest)
-        return manifest
+        manifest = self._read_manifest(job_dir)
+        if not recover_interrupted or manifest.status is not JobStatus.RUNNING:
+            return manifest
+        try:
+            with self.locked(job_dir):
+                latest = self._read_manifest(job_dir)
+                if latest.status is JobStatus.RUNNING:
+                    latest.status = JobStatus.INTERRUPTED
+                    for step in latest.steps.values():
+                        if step.status is StepStatus.RUNNING:
+                            step.status = StepStatus.INTERRUPTED
+                    self._write_manifest(job_dir, latest)
+                return latest
+        except JobLockedError:
+            return self._read_manifest(job_dir)
 
     def save(self, job_dir: Path, manifest: JobManifest) -> None:
         job_dir = Path(job_dir).resolve()
         with JobLock(job_dir):
             self._write_manifest(job_dir, manifest)
+
+    def _read_manifest(self, job_dir: Path) -> JobManifest:
+        data = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        return manifest_from_dict(data)
 
     def _write_manifest(self, job_dir: Path, manifest: JobManifest) -> None:
         manifest.updated_at = datetime.now(UTC).isoformat()
@@ -127,8 +138,8 @@ class JobStore:
             indent=2,
             sort_keys=True,
         ) + "\n"
-        temporary.write_text(payload, encoding="utf-8")
         try:
+            temporary.write_text(payload, encoding="utf-8")
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
