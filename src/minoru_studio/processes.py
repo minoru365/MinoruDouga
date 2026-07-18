@@ -121,25 +121,26 @@ def run_cancellable_process(
         shell=False,
         creationflags=creationflags,
     )
-    deadline = time.monotonic() + timeout_s if timeout_s is not None else None
-    while True:
-        if cancel_event is not None and cancel_event.is_set():
-            _terminate_process(process)
-            process.communicate()
-            raise ProcessCancelledError(display) from None
-        if deadline is not None and time.monotonic() >= deadline:
-            _terminate_process(process)
-            process.communicate()
-            raise ProcessTimeoutError(timeout_s, display) from None
-        try:
-            stdout, stderr = process.communicate(timeout=poll_interval_s)
-            break
-        except subprocess.TimeoutExpired:
-            continue
-        except KeyboardInterrupt:
-            _terminate_process(process)
-            process.communicate()
-            raise ProcessCancelledError(display) from None
+    try:
+        deadline = time.monotonic() + timeout_s if timeout_s is not None else None
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                _terminate_process(process)
+                process.communicate()
+                raise ProcessCancelledError(display) from None
+            if deadline is not None and time.monotonic() >= deadline:
+                _terminate_process(process)
+                process.communicate()
+                raise ProcessTimeoutError(timeout_s, display) from None
+            try:
+                stdout, stderr = process.communicate(timeout=poll_interval_s)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    except KeyboardInterrupt:
+        _terminate_process(process)
+        process.communicate()
+        raise ProcessCancelledError(display) from None
     return ProcessResult(
         returncode=process.returncode,
         stdout=stdout,

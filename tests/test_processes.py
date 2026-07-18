@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -158,3 +159,59 @@ def test_cancellable_process_converts_keyboard_interrupt_and_terminates(monkeypa
         run_cancellable_process([sys.executable, "-c", "pass"])
 
     assert process.terminated
+
+
+def test_cancellable_process_cleans_up_interrupt_during_deadline_check(monkeypatch):
+    class TrackingProcess:
+        def __init__(self):
+            self.terminated = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            raise AssertionError("kill should not be needed")
+
+        def communicate(self, timeout=None):
+            self.reaped = True
+            return "", ""
+
+    process = TrackingProcess()
+    monotonic_calls = iter((0.0, KeyboardInterrupt()))
+    monkeypatch.setattr("minoru_studio.processes.subprocess.Popen", lambda *args, **kwargs: process)
+
+    def interrupting_monotonic():
+        value = next(monotonic_calls)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(
+        "minoru_studio.processes.time.monotonic", interrupting_monotonic
+    )
+
+    with pytest.raises(ProcessCancelledError):
+        run_cancellable_process([sys.executable, "-c", "pass"], timeout_s=5)
+
+    assert process.terminated
+    assert process.reaped
+
+
+def test_cancellable_process_timeout_prevents_delayed_child_side_effect(tmp_path):
+    marker = tmp_path / "child-survived"
+    with pytest.raises(ProcessTimeoutError):
+        run_cancellable_process(
+            [
+                sys.executable,
+                "-c",
+                f"import pathlib, time; time.sleep(0.2); pathlib.Path({str(marker)!r}).touch()",
+            ],
+            timeout_s=0.05,
+            poll_interval_s=0.01,
+        )
+
+    time.sleep(0.3)
+    assert not marker.exists()
