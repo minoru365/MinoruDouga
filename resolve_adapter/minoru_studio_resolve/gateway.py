@@ -1,9 +1,13 @@
 import os
 
 from minoru_studio_resolve.placement import (
+    corrected_source_length,
     convert_cut_points,
+    fit_steps,
     parse_rate,
+    source_frames_available,
     source_window,
+    timeline_to_source_frames,
     typical_still_target,
 )
 
@@ -372,3 +376,301 @@ class ResolveGateway(object):
         for detail in item_details:
             result.append(replacements.get(detail["input_index"], detail))
         return result
+
+    def _timeline_names(self):
+        project = self._project()
+        names = set()
+        for index in range(1, int(project.GetTimelineCount()) + 1):
+            timeline = project.GetTimelineByIndex(index)
+            if timeline:
+                names.add(str(timeline.GetName() or ""))
+        return names
+
+    def proposed_timeline_name(self, requested):
+        names = self._timeline_names()
+        if requested not in names:
+            return requested
+        suffix = 2
+        while True:
+            candidate = "{0}-{1:03d}".format(requested, suffix)
+            if candidate not in names:
+                return candidate
+            suffix += 1
+
+    def create_final_timeline(self, requested):
+        project = self._project()
+        media_pool = self._media_pool()
+        name = self.proposed_timeline_name(requested)
+        timeline = media_pool.CreateEmptyTimeline(name)
+        if not timeline:
+            raise GatewayError("cannot create final timeline")
+        if not project.SetCurrentTimeline(timeline):
+            raise GatewayError("cannot activate final timeline")
+        return timeline, {
+            "id": _required_id(timeline.GetUniqueId(), "final timeline"),
+            "name": str(timeline.GetName() or name),
+        }
+
+    def verify_timeline_rate(self, timeline, expected):
+        try:
+            actual = parse_rate(timeline.GetSetting("timelineFrameRate"))
+        except ValueError as exc:
+            raise GatewayError("final timeline rate is invalid: {0}".format(exc))
+        wanted = (int(expected["numerator"]), int(expected["denominator"]))
+        if actual != wanted:
+            raise GatewayError("final timeline frame rate changed")
+        return {"numerator": actual[0], "denominator": actual[1]}
+
+    def _append(self, media_pool, timeline, descriptor, label):
+        result = media_pool.AppendToTimeline([descriptor])
+        if not isinstance(result, list) or not result:
+            raise GatewayError("cannot place {0}".format(label))
+        item = result[0]
+        try:
+            duration = int(item.GetDuration())
+        except (TypeError, ValueError):
+            raise GatewayError("{0} duration is invalid".format(label))
+        if duration <= 0:
+            raise GatewayError("{0} duration must be positive".format(label))
+        return item, duration
+
+    def _window_values(self, detail):
+        return (
+            detail["mark_in_frame"],
+            detail["mark_out_frame_exclusive"],
+        ), (
+            detail["source_rate"]["numerator"],
+            detail["source_rate"]["denominator"],
+        )
+
+    def populate_timeline(self, timeline, items, validated, detail):
+        media_pool = self._media_pool()
+        rate = (
+            detail["timeline_rate"]["numerator"],
+            detail["timeline_rate"]["denominator"],
+        )
+        try:
+            points = convert_cut_points(
+                validated["plan"]["analysis"]["cut_points_ms"],
+                rate,
+            )
+        except ValueError as exc:
+            raise GatewayError("cannot convert final cut points: {0}".format(exc))
+        base = int(timeline.GetStartFrame())
+        audio = items.get(validated["plan"]["audio_input_index"])
+        if audio is None:
+            raise GatewayError("recorded BGM item is missing")
+        self._append(
+            media_pool,
+            timeline,
+            {
+                "mediaPoolItem": audio,
+                "startFrame": 0,
+                "endFrame": points[-1] - 1,
+                "mediaType": 2,
+                "trackIndex": 1,
+                "recordFrame": base,
+            },
+            "BGM",
+        )
+
+        materials = sorted(
+            validated["plan"]["materials"],
+            key=lambda value: value["order_index"],
+        )
+        if not materials:
+            raise GatewayError("placement requires visual materials")
+        windows = {
+            value["input_index"]: value
+            for value in detail.get("source_windows", [])
+        }
+        video_cursors = {
+            input_index: window["mark_in_frame"]
+            for input_index, window in windows.items()
+        }
+        usage = {str(value["input_index"]): 0 for value in materials}
+        gaps = []
+        mismatches = []
+        corrections = 0
+        placed = 0
+        material_cursor = 0
+        cut_index = 0
+        every_n = validated["plan"]["settings"]["every_n_resolved"]
+        custom_data = "minoru-studio:{0}:{1}".format(
+            validated["manifest"]["job_id"],
+            detail["attempt_id"],
+        )
+
+        while cut_index < len(points) - 1:
+            requested = min(every_n, len(points) - 1 - cut_index)
+            selected = None
+            for offset in range(len(materials)):
+                position = (material_cursor + offset) % len(materials)
+                material = materials[position]
+                input_index = material["input_index"]
+                if material["kind"] == "photo":
+                    available = detail["still"]["actual_frames"]
+                    steps = fit_steps(
+                        points,
+                        cut_index,
+                        requested,
+                        available,
+                    )
+                    if steps:
+                        target = points[cut_index + steps] - points[cut_index]
+                        selected = {
+                            "material": material,
+                            "position": position,
+                            "steps": steps,
+                            "source_start": 0,
+                            "source_frames": target,
+                            "source_rate": rate,
+                        }
+                        break
+                else:
+                    window_detail = windows.get(input_index)
+                    if window_detail is None:
+                        raise GatewayError("video source window is missing")
+                    window, source_rate = self._window_values(window_detail)
+                    cursor = video_cursors[input_index]
+                    requested_target = (
+                        points[cut_index + requested] - points[cut_index]
+                    )
+                    requested_source = timeline_to_source_frames(
+                        requested_target,
+                        rate,
+                        source_rate,
+                    )
+                    if cursor + requested_source > window[1]:
+                        cursor = window[0]
+                    available = source_frames_available(
+                        (cursor, window[1]),
+                        source_rate,
+                        rate,
+                    )
+                    steps = fit_steps(
+                        points,
+                        cut_index,
+                        requested,
+                        available,
+                    )
+                    if steps:
+                        target = points[cut_index + steps] - points[cut_index]
+                        source_frames = timeline_to_source_frames(
+                            target,
+                            rate,
+                            source_rate,
+                        )
+                        if cursor + source_frames <= window[1]:
+                            selected = {
+                                "material": material,
+                                "position": position,
+                                "steps": steps,
+                                "source_start": cursor,
+                                "source_frames": source_frames,
+                                "source_rate": source_rate,
+                            }
+                            break
+            if selected is None:
+                gaps.append(
+                    {
+                        "cut_index": cut_index,
+                        "start_frame": points[cut_index],
+                    }
+                )
+                cut_index += 1
+                continue
+
+            material = selected["material"]
+            input_index = material["input_index"]
+            media_item = items.get(input_index)
+            if media_item is None:
+                raise GatewayError("recorded visual item is missing")
+            target = (
+                points[cut_index + selected["steps"]] - points[cut_index]
+            )
+            source_frames = selected["source_frames"]
+            descriptor = {
+                "mediaPoolItem": media_item,
+                "startFrame": selected["source_start"],
+                "endFrame": selected["source_start"] + source_frames - 1,
+                "mediaType": 1,
+                "trackIndex": 1,
+                "recordFrame": base + points[cut_index],
+            }
+            timeline_item, actual = self._append(
+                media_pool,
+                timeline,
+                descriptor,
+                "visual",
+            )
+            if material["kind"] == "video" and abs(actual - target) > 1:
+                if not timeline.DeleteClips([timeline_item], False):
+                    raise GatewayError("cannot delete mismatched video clip")
+                corrected = corrected_source_length(
+                    source_frames,
+                    target,
+                    actual,
+                    rate,
+                    selected["source_rate"],
+                )
+                window, unused_rate = self._window_values(windows[input_index])
+                if selected["source_start"] + corrected > window[1]:
+                    corrected = window[1] - selected["source_start"]
+                if corrected <= 0:
+                    raise GatewayError("corrected video window is empty")
+                descriptor["endFrame"] = (
+                    selected["source_start"] + corrected - 1
+                )
+                timeline_item, actual = self._append(
+                    media_pool,
+                    timeline,
+                    descriptor,
+                    "corrected visual",
+                )
+                source_frames = corrected
+                corrections += 1
+            if abs(actual - target) > 1:
+                mismatches.append(
+                    {
+                        "input_index": input_index,
+                        "cut_index": cut_index,
+                        "target_frames": target,
+                        "actual_frames": actual,
+                    }
+                )
+            if not timeline.AddMarker(
+                points[cut_index],
+                "Blue",
+                "beat",
+                "",
+                1,
+                custom_data,
+            ):
+                raise GatewayError("cannot add beat marker")
+            if material["kind"] == "video":
+                window, unused_rate = self._window_values(windows[input_index])
+                next_cursor = selected["source_start"] + source_frames
+                video_cursors[input_index] = (
+                    window[0] if next_cursor >= window[1] else next_cursor
+                )
+            usage[str(input_index)] += 1
+            placed += 1
+            material_cursor = (selected["position"] + 1) % len(materials)
+            cut_index += selected["steps"]
+
+        return {
+            "bgm_placed": True,
+            "placed": placed,
+            "failed": 0,
+            "gaps": len(gaps),
+            "gap_details": gaps,
+            "corrections": corrections,
+            "per_input_usage": usage,
+            "unused_inputs": [
+                int(input_index)
+                for input_index, count in usage.items()
+                if count == 0
+            ],
+            "mismatches": mismatches,
+        }

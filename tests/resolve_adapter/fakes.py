@@ -55,11 +55,21 @@ class FakeFolder:
 
 
 class FakeTimelineItem:
-    def __init__(self, item_id, media_pool_item, duration, record_frame=0):
+    def __init__(
+        self,
+        item_id,
+        media_pool_item,
+        duration,
+        record_frame=0,
+        media_type=1,
+        track_index=1,
+    ):
         self.item_id = item_id
         self.media_pool_item = media_pool_item
         self.duration = duration
         self.record_frame = record_frame
+        self.media_type = media_type
+        self.track_index = track_index
 
     def GetUniqueId(self):
         return self.item_id
@@ -75,6 +85,8 @@ class FakeTimeline:
         self.rate = rate
         self.items = []
         self.markers = []
+        self.audio_track_items = {1: []}
+        self.video_track_items = {1: []}
 
     def GetUniqueId(self):
         return self.timeline_id
@@ -94,6 +106,13 @@ class FakeTimeline:
         for item in items:
             if item in self.items:
                 self.items.remove(item)
+            tracks = (
+                self.audio_track_items
+                if item.media_type == 2
+                else self.video_track_items
+            )
+            if item in tracks.get(item.track_index, []):
+                tracks[item.track_index].remove(item)
         return True
 
     def AddMarker(self, frame_id, color, name, note, duration, custom_data):
@@ -200,7 +219,10 @@ class FakeMediaPool:
         for clip in clips:
             item = clip["mediaPoolItem"]
             media_type = clip.get("mediaType", 1)
-            if media_type == 1:
+            is_probe = self.project.current_timeline.GetName().startswith(
+                "_MinoruStudio Probe "
+            )
+            if media_type == 1 and not is_probe:
                 self._visual_appends += 1
                 if (
                     self.fail_visual_append_after is not None
@@ -209,16 +231,30 @@ class FakeMediaPool:
                     return False
             requested = int(clip["endFrame"]) - int(clip["startFrame"]) + 1
             duration = requested
-            if item.kind == "photo" and self.still_duration is not None:
-                duration = self.still_duration
+            if item.kind == "photo":
+                if self.still_duration is not None:
+                    duration = self.still_duration
+                elif is_probe:
+                    duration = max(1, requested // 2)
             self._timeline_item_number += 1
             timeline_item = FakeTimelineItem(
                 "timeline-item-{0}".format(self._timeline_item_number),
                 item,
                 duration,
                 int(clip.get("recordFrame", 0)),
+                media_type,
+                int(clip.get("trackIndex", 1)),
             )
-            self.project.current_timeline.items.append(timeline_item)
+            timeline = self.project.current_timeline
+            timeline.items.append(timeline_item)
+            tracks = (
+                timeline.audio_track_items
+                if media_type == 2
+                else timeline.video_track_items
+            )
+            tracks.setdefault(timeline_item.track_index, []).append(
+                timeline_item
+            )
             result.append(timeline_item)
         return result
 
@@ -271,6 +307,14 @@ class FakeProject:
     def final_timeline_ids(self):
         return [
             timeline.GetUniqueId()
+            for timeline in self.timelines
+            if not timeline.GetName().startswith("_MinoruStudio Probe ")
+        ]
+
+    @property
+    def final_timelines(self):
+        return [
+            timeline
             for timeline in self.timelines
             if not timeline.GetName().startswith("_MinoruStudio Probe ")
         ]

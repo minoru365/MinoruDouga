@@ -250,3 +250,130 @@ class AdapterService(object):
                 except Exception:
                     pass
         return self.applications.load(root, detail["attempt_id"])
+
+    def latest_detail(self, job_dir):
+        validated = load_validated_job(job_dir)
+        project = self.gateway.current_project()
+        detail = self.applications.latest(
+            validated["root"],
+            project["id"],
+        )
+        if detail is None:
+            raise AdapterError(
+                "no Resolve application exists for this project"
+            )
+        return detail
+
+    def _confirmation_summary(self, validated, detail, proposed_name):
+        plan = validated["plan"]
+        materials = plan["materials"]
+        counts = {"photo": 0, "video": 0}
+        for material in materials:
+            counts[material["kind"]] += 1
+        points = plan["analysis"]["cut_points_ms"]
+        intervals = [
+            right - left for left, right in zip(points, points[1:])
+        ]
+        approximate = 0
+        if intervals:
+            approximate = int(
+                round(sum(intervals) / float(len(intervals)))
+            ) * plan["settings"]["every_n_resolved"]
+        return {
+            "bpm": plan["analysis"]["bpm"],
+            "interval": plan["settings"]["every_n_resolved"],
+            "approximate_cut_ms": approximate,
+            "duration_ms": plan["analysis"]["duration_ms"],
+            "material_counts": counts,
+            "still": detail.get("still"),
+            "timeline_name": proposed_name,
+        }
+
+    def apply_ready(self, job_dir, confirm):
+        validated = load_validated_job(job_dir)
+        root = validated["root"]
+        project = self.gateway.current_project()
+        detail = self.applications.latest(root, project["id"])
+        if detail is None:
+            raise AdapterError("no Resolve application exists for this project")
+        if detail.get("operation_token") is not None:
+            self.applications.mark_interrupted_failed(
+                root,
+                detail["attempt_id"],
+            )
+            raise AdapterError("previous Resolve operation was interrupted")
+        if detail["state"] != "ready":
+            raise AdapterError("Resolve attempt is not ready to apply")
+        proposed = self.gateway.proposed_timeline_name(
+            validated["plan"]["settings"]["timeline_name"]
+        )
+        summary = self._confirmation_summary(validated, detail, proposed)
+        try:
+            confirmed = bool(confirm(summary))
+        except Exception as exc:
+            raise AdapterError("confirmation failed: {0}".format(exc))
+        if not confirmed:
+            return detail
+
+        token = next(self.operation_tokens)
+        claimed = False
+        try:
+            detail = self.applications.claim(
+                root,
+                detail["attempt_id"],
+                token,
+            )
+            claimed = True
+            transition(detail, "applying")
+            detail = self.applications.update(root, detail)
+            items = self.gateway.find_items(detail["bin"], detail["items"])
+            timeline, timeline_detail = self.gateway.create_final_timeline(
+                validated["plan"]["settings"]["timeline_name"]
+            )
+            detail["timeline"] = timeline_detail
+            detail = self.applications.update(root, detail)
+            detail["timeline_rate"] = self.gateway.verify_timeline_rate(
+                timeline,
+                detail["timeline_rate"],
+            )
+            detail = self.applications.update(root, detail)
+            result = self.gateway.populate_timeline(
+                timeline,
+                items,
+                validated,
+                detail,
+            )
+            if (
+                not result.get("bgm_placed")
+                or not detail.get("timeline")
+                or result.get("placed", 0) < 1
+            ):
+                raise AdapterError("final timeline is incomplete")
+            detail["result"] = result
+            transition(detail, "applied")
+            detail = self.applications.update(root, detail)
+        except Exception as exc:
+            if claimed:
+                try:
+                    self.applications.fail(
+                        root,
+                        detail["attempt_id"],
+                        exc,
+                        token=token,
+                    )
+                except Exception:
+                    pass
+            if isinstance(exc, AdapterError):
+                raise
+            raise AdapterError("Resolve apply failed: {0}".format(exc))
+        finally:
+            if claimed:
+                try:
+                    self.applications.release(
+                        root,
+                        detail["attempt_id"],
+                        token,
+                    )
+                except Exception:
+                    pass
+        return self.applications.load(root, detail["attempt_id"])

@@ -88,3 +88,32 @@ def fit_steps(points, start_index, requested, available_timeline_frames):
             return steps
         steps -= 1
     return 0
+
+
+def source_frames_available(window, source_rate, timeline_rate):
+    source_length = window[1] - window[0]
+    return _round_nonnegative(
+        source_length * timeline_rate[0] * source_rate[1],
+        timeline_rate[1] * source_rate[0],
+    )
+
+
+def corrected_source_length(
+    current_source_frames,
+    target_timeline_frames,
+    actual_timeline_frames,
+    timeline_rate,
+    source_rate,
+):
+    difference = target_timeline_frames - actual_timeline_frames
+    correction = _round_nonnegative(
+        abs(difference) * source_rate[0] * timeline_rate[1],
+        source_rate[1] * timeline_rate[0],
+    )
+    correction = max(1, correction)
+    return max(
+        1,
+        current_source_frames + (
+            correction if difference > 0 else -correction
+        ),
+    )
