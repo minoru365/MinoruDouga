@@ -36,3 +36,25 @@ def test_launch_gui_preserves_a_falsy_injected_controller(monkeypatch):
         gui.launch_gui(FalsyController())
 
     assert default_constructions == []
+
+
+def test_controller_prepares_beat_sync_with_injected_service(tmp_path):
+    calls = []
+
+    class Service:
+        def create_and_prepare(self, request):
+            calls.append(request)
+            return tmp_path / "demo.media-job"
+
+    controller = LauncherController(beat_sync_service=Service())
+    result = controller.prepare_beat_sync(
+        music="song.wav",
+        media_dir="media",
+        every_n="auto",
+        order="asc",
+        timeline_name="Demo",
+        name="demo",
+        output_dir=str(tmp_path),
+    )
+    assert result.name == "demo.media-job"
+    assert calls[0].timeline_name == "Demo"
