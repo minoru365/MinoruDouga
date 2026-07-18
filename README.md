@@ -1,17 +1,57 @@
-# MinoruStudio（基盤開発中）
+# MinoruStudio
 
-MinoruStudioは、MinoruDougaの音ハメ機能を将来移植し、字幕、読み上げ、
-デモ動画制作を固定モードで扱うWindows向けローカルツールです。
+MinoruStudioは、MinoruDougaの音ハメを包含し、字幕、読み上げ、リポジトリの
+デモ動画制作などを段階的に扱うWindows向けローカル制作ツールです。
 
-現在の実装段階は共通基盤のみです。メディア処理とResolve連携はまだ
-MinoruStudioへ移植していません。既存MinoruDougaは下記の手順で引き続き利用できます。
+現在は音ハメの準備工程まで実装しています。BGMを解析し、静止画・動画の
+順序とカット位置を確定した `.media-job` を作成できます。DaVinci Resolveへ
+実際にタイムラインを作る処理は次段階のResolve内アダプターで追加します。
 
 ## 開発環境
 
 ```powershell
-uv sync --dev
+uv sync --locked --dev
 uv run pytest -q
 ```
+
+## 音ハメjobを準備する
+
+```powershell
+uv run minoru-studio beat-sync `
+  -Music .\song.mp3 `
+  -MediaDir .\media `
+  -EveryN auto `
+  -Order asc `
+  -TimelineName "Beat Sync Demo" `
+  -Name demo `
+  -OutputDir .\jobs
+```
+
+`-EveryN` は `auto` または1〜16、`-Order` は `asc` または `random` を
+指定します。同名jobが存在する場合は連番の新規jobを作り、既存jobを
+上書きしません。
+
+成功すると `.media-job/outputs/beat-sync-plan.json` が作成されます。BGMの
+長さ、ビート、カット位置はすべて非負の整数ミリ秒で保存されるため、CLIと
+Resolve内アダプターの境界で小数秒の解釈差が生じません。
+
+中断した準備は次のコマンドで再開できます。入力ファイルが変更されている
+場合は安全のため停止します。
+
+```powershell
+uv run minoru-studio beat-sync resume .\jobs\demo.media-job
+```
+
+## GUI
+
+```powershell
+uv run minoru-studio
+```
+
+引数なしでランチャーを開きます。BGM、素材フォルダ、カット間隔、並び順、
+タイムライン名を指定すると、解析はバックグラウンドで実行されます。前回の
+入力値は `%APPDATA%\MinoruStudio\config.json` に保存されますが、許可された
+画面項目以外は保存しません。
 
 ## 基盤コマンド
 
@@ -23,12 +63,16 @@ uv run minoru-studio jobs inspect .\jobs\demo.media-job
 uv run minoru-studio
 ```
 
-引数なしではジョブ管理GUIを開きます。Phase 1のジョブは `pending` 状態の
-基盤データだけを作り、動画、音声、Resolveタイムラインを変更しません。
+`jobs create` は各固定モードの空の `pending` jobを作る基盤コマンドです。
+音ハメ準備には上記の専用 `beat-sync` コマンドまたはGUIを使用してください。
+
+現段階のMinoruStudioはResolveプロジェクトを変更しません。実際の
+タイムライン生成が必要な場合は、下記の既存MinoruDougaをフォールバックとして
+使用してください。
 
 ---
 
-# MinoruDouga 🎵🎬
+# MinoruDouga（Resolve実適用のフォールバック） 🎵🎬
 
 写真・動画・音楽を渡すと、曲のビートに合わせてテンポよくカットした
 タイムラインを DaVinci Resolve 上に自動生成するツール。
