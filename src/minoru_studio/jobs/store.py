@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from minoru_studio.jobs.lock import JobLock, JobLockedError
 from minoru_studio.jobs.model import (
+    ArtifactRecord,
     InputRef,
     JobManifest,
     JobMode,
@@ -63,6 +64,22 @@ def fingerprint_file(path: Path) -> InputRef:
         size=stat.st_size,
         mtime_ns=stat.st_mtime_ns,
         sha256=digest.hexdigest(),
+    )
+
+
+def fingerprint_artifact(job_dir: Path, path: Path, kind: str) -> ArtifactRecord:
+    root = Path(job_dir).resolve(strict=True)
+    resolved = Path(path).resolve(strict=True)
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"artifact must be inside job: {resolved}") from exc
+    ref = fingerprint_file(resolved)
+    return ArtifactRecord(
+        kind=kind,
+        path=relative.as_posix(),
+        size=ref.size,
+        sha256=ref.sha256,
     )
 
 

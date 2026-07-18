@@ -180,3 +180,18 @@ def test_save_changes_updated_at_when_clock_matches_existing_token(tmp_path, mon
     store.save(job_dir, manifest)
 
     assert manifest.updated_at != original_token
+
+
+def test_artifact_fingerprint_requires_job_containment(tmp_path):
+    from minoru_studio.jobs.store import fingerprint_artifact
+
+    store = JobStore()
+    job_dir = store.create(tmp_path, "demo", JobMode.BEAT_SYNC)
+    plan = job_dir / "outputs" / "beat-sync-plan.json"
+    plan.write_text("{}", encoding="utf-8")
+    record = fingerprint_artifact(job_dir, plan, "beat-sync-plan")
+    assert record.path == "outputs/beat-sync-plan.json"
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="inside job"):
+        fingerprint_artifact(job_dir, outside, "x")
