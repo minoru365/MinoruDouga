@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from pathlib import Path
 import struct
@@ -52,6 +53,7 @@ class Collaborators:
         self.font: FontChoice | None = None
         self.font_error: Exception | None = None
         self.preview_fonts: list[FontChoice] = []
+        self.font_resolve_calls = 0
 
     def probe(self, source: Path) -> MediaInfo:
         self.probe_calls += 1
@@ -120,6 +122,7 @@ class Collaborators:
         return destination
 
     def resolve_font(self) -> FontChoice:
+        self.font_resolve_calls += 1
         if self.font_error is not None:
             raise self.font_error
         if self.font is None:
@@ -483,6 +486,61 @@ def test_resume_repreflights_missing_cached_preview_font_before_rerendering(tmp_
     assert collaborators.artifact_calls == 2
     assert collaborators.preview_calls == 2
     assert collaborators.preview_fonts[-1] == FontChoice("Meiryo", second_font)
+
+
+def test_resume_rejects_relative_cached_preview_font_path_and_reprobes(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    font_file = tmp_path / "Fonts" / "YuGothR.ttc"
+    font_file.parent.mkdir()
+    font_file.touch()
+    collaborators.font = FontChoice("Yu Gothic", font_file)
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source, preview=True))
+    state_path = job_dir / "work" / "preview-font.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["file"] = font_file.relative_to(tmp_path).as_posix()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+
+    service.resume(job_dir)
+
+    assert collaborators.probe_calls == 2
+    assert collaborators.font_resolve_calls == 2
+    assert collaborators.extract_calls == 2
+    assert collaborators.worker_calls == 2
+    assert collaborators.artifact_calls == 2
+    assert collaborators.preview_calls == 2
+
+
+def test_replaced_cached_preview_font_reprobes_and_clears_stale_provenance_on_failure(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    font_file = tmp_path / "Fonts" / "YuGothR.ttc"
+    font_file.parent.mkdir()
+    font_file.write_bytes(b"original font")
+    collaborators.font = FontChoice("Yu Gothic", font_file)
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source, preview=True))
+    font_file.write_bytes(b"replacement font with changed content")
+    collaborators.font_error = FileNotFoundError("no Japanese font")
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+
+    with pytest.raises(TranscriptionFailed, match="input validation"):
+        service.resume(job_dir)
+
+    manifest = JobStore().load(job_dir, recover_interrupted=False)
+    assert collaborators.probe_calls == 2
+    assert collaborators.font_resolve_calls == 2
+    assert collaborators.extract_calls == 1
+    assert collaborators.worker_calls == 1
+    assert collaborators.artifact_calls == 1
+    assert collaborators.preview_calls == 1
+    assert manifest.artifacts == []
+    assert "preview-font" not in manifest.tools
 
 
 def test_step_transitions_record_timestamps_and_failure_exit_metadata(tmp_path: Path):

@@ -40,6 +40,7 @@ from minoru_studio.transcribe.media import (
     read_media_tool_versions,
     render_preview,
     resolve_japanese_font,
+    is_supported_japanese_font,
 )
 from minoru_studio.transcribe.models import (
     default_model_cache_dir,
@@ -64,11 +65,6 @@ _ARTIFACTS = {
 _PREVIEW_ARTIFACT = "preview-mp4"
 _PREVIEW_FONT = "windows-japanese-auto"
 _PREVIEW_FONT_STATE = "preview-font.json"
-_PREVIEW_FONT_FILES = {
-    "Yu Gothic": "yugothr.ttc",
-    "Meiryo": "meiryo.ttc",
-    "MS Gothic": "msgothic.ttc",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,12 +407,21 @@ class TranscribeService:
                 font = self._font_resolver()
             except (OSError, ValueError, TypeError) as exc:
                 raise _InputInvalid("preview font preflight did not validate") from exc
-            if not self._font_choice_is_valid(font):
+            if not is_supported_japanese_font(font):
                 raise _InputInvalid("preview font preflight did not validate")
             font = FontChoice(font.family, font.file.resolve(strict=True))
+            if not is_supported_japanese_font(font):
+                raise _InputInvalid("preview font preflight did not validate")
+            fingerprint = fingerprint_file(font.file)
             self._write_json(
                 job_dir / "work" / _PREVIEW_FONT_STATE,
-                {"family": font.family, "file": str(font.file)},
+                {
+                    "family": font.family,
+                    "file": fingerprint.path,
+                    "size": fingerprint.size,
+                    "mtime_ns": fingerprint.mtime_ns,
+                    "sha256": fingerprint.sha256,
+                },
             )
             context["preview_font"] = font
         path = job_dir / "work" / "media-info.json"
@@ -643,10 +648,34 @@ class TranscribeService:
         try:
             fingerprint_file(path)
             data = json.loads(path.read_text(encoding="utf-8"))
-            if set(data) != {"family", "file"}:
+            if set(data) != {"family", "file", "size", "mtime_ns", "sha256"}:
                 return False
-            font = FontChoice(data["family"], Path(data["file"]))
-            if not self._font_choice_is_valid(font):
+            if (
+                not isinstance(data["family"], str)
+                or not isinstance(data["file"], str)
+                or type(data["size"]) is not int
+                or data["size"] < 0
+                or type(data["mtime_ns"]) is not int
+                or data["mtime_ns"] < 0
+                or not isinstance(data["sha256"], str)
+            ):
+                return False
+            stored_file = Path(data["file"])
+            if not stored_file.is_absolute():
+                return False
+            resolved = stored_file.resolve(strict=True)
+            if str(resolved) != data["file"]:
+                return False
+            font = FontChoice(data["family"], resolved)
+            if not is_supported_japanese_font(font):
+                return False
+            current = fingerprint_file(resolved)
+            if (
+                current.path != data["file"]
+                or current.size != data["size"]
+                or current.mtime_ns != data["mtime_ns"]
+                or current.sha256 != data["sha256"]
+            ):
                 return False
             context["preview_font"] = font
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -696,6 +725,8 @@ class TranscribeService:
         if _PREVIEW_STEP in invalidated:
             artifact_kinds.add(_PREVIEW_ARTIFACT)
         manifest.artifacts = [item for item in manifest.artifacts if item.kind not in artifact_kinds]
+        if "probe-input" in invalidated:
+            manifest.tools.pop("preview-font", None)
         manifest.last_error = None
 
     def _mark_failed(
@@ -793,20 +824,9 @@ class TranscribeService:
     @staticmethod
     def _require_preview_font(context: dict[str, Any]) -> FontChoice:
         value = context.get("preview_font")
-        if not TranscribeService._font_choice_is_valid(value):
+        if not is_supported_japanese_font(value):
             raise _InputInvalid("preview font is not available")
         return value
-
-    @staticmethod
-    def _font_choice_is_valid(value: object) -> bool:
-        return (
-            isinstance(value, FontChoice)
-            and isinstance(value.family, str)
-            and bool(value.family.strip())
-            and isinstance(value.file, Path)
-            and value.file.is_file()
-            and value.file.name.casefold() == _PREVIEW_FONT_FILES.get(value.family, "")
-        )
 
     @staticmethod
     def _worker_result_within_media(result: WorkerResult, media_info: MediaInfo) -> bool:

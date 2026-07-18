@@ -250,6 +250,35 @@ def test_render_preview_uses_explicit_preflight_font_without_resolving_another(t
     assert "force_style=FontName=Meiryo" in filter_value
 
 
+@pytest.mark.parametrize(
+    "font",
+    [
+        lambda directory: FontChoice("Yu Gothic:evil", directory / "YuGothR.ttc"),
+        lambda directory: FontChoice("Meiryo", directory / "YuGothR.ttc"),
+    ],
+)
+def test_render_preview_rejects_unsafe_or_mismatched_supplied_font_before_running(tmp_path, font):
+    source = tmp_path / "source.mp4"
+    subtitles = tmp_path / "captions.srt"
+    subtitles.touch()
+    directory = tmp_path / "Fonts"
+    directory.mkdir()
+    (directory / "YuGothR.ttc").touch()
+    calls: list[list[str]] = []
+
+    def runner(args, **kwargs):
+        calls.append(list(args))
+        pytest.fail("runner must not be called for an invalid supplied font")
+
+    with pytest.raises(ValueError, match="font"):
+        render_preview(
+            source, subtitles, tmp_path / "preview.mp4", MediaInfo(1_000, True, True),
+            font=font(directory), runner=runner, cancel_event=None,
+        )
+
+    assert calls == []
+
+
 def test_validate_preview_accepts_inclusive_duration_boundary_and_requires_both_streams(tmp_path):
     preview = tmp_path / "preview.mp4"
     assert validate_preview(

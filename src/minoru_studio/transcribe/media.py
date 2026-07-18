@@ -40,6 +40,12 @@ class MediaToolVersions:
 
 Runner = Callable[..., ProcessResult]
 
+_JAPANESE_WINDOWS_FONT_FILES = {
+    "Yu Gothic": "YuGothR.ttc",
+    "Meiryo": "meiryo.ttc",
+    "MS Gothic": "msgothic.ttc",
+}
+
 
 def read_media_tool_versions(*, runner: Runner = run_process) -> MediaToolVersions:
     return MediaToolVersions(
@@ -101,15 +107,21 @@ def extract_audio(
 def resolve_japanese_font(windows_dir: Path | None = None) -> FontChoice:
     root = windows_dir if windows_dir is not None else Path(os.environ.get("WINDIR", r"C:\\Windows"))
     fonts = root / "Fonts"
-    for filename, family in (
-        ("YuGothR.ttc", "Yu Gothic"),
-        ("meiryo.ttc", "Meiryo"),
-        ("msgothic.ttc", "MS Gothic"),
-    ):
-        candidate = fonts / filename
-        if candidate.is_file():
-            return FontChoice(family=family, file=candidate)
+    for family, filename in _JAPANESE_WINDOWS_FONT_FILES.items():
+        choice = FontChoice(family=family, file=fonts / filename)
+        if is_supported_japanese_font(choice):
+            return choice
     raise FileNotFoundError("no supported Japanese Windows font found")
+
+
+def is_supported_japanese_font(value: object) -> bool:
+    return (
+        isinstance(value, FontChoice)
+        and isinstance(value.family, str)
+        and isinstance(value.file, Path)
+        and value.file.is_file()
+        and value.file.name.casefold() == _JAPANESE_WINDOWS_FONT_FILES.get(value.family, "").casefold()
+    )
 
 
 def render_preview(
@@ -127,13 +139,7 @@ def render_preview(
     if not media_info.has_audio:
         raise ValueError("preview requires an audio stream")
     selected_font = font if font is not None else resolve_japanese_font()
-    if (
-        not isinstance(selected_font, FontChoice)
-        or not isinstance(selected_font.family, str)
-        or not selected_font.family.strip()
-        or not isinstance(selected_font.file, Path)
-        or not selected_font.file.is_file()
-    ):
+    if not is_supported_japanese_font(selected_font):
         raise ValueError("preview font is invalid")
     output = Path(destination)
     output.parent.mkdir(parents=True, exist_ok=True)
