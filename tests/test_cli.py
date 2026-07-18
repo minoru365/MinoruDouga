@@ -15,3 +15,14 @@ def test_empty_argv_prints_help_before_gui_is_added(capsys):
     output = capsys.readouterr().out
     assert "usage:" in output
     assert "MinoruStudio" in output
+
+
+def test_doctor_exit_code_reflects_report(monkeypatch):
+    from minoru_studio.doctor import DoctorReport
+
+    monkeypatch.setattr(
+        "minoru_studio.cli.run_doctor",
+        lambda: DoctorReport(checks=[]),
+    )
+
+    assert main(["doctor", "--json"]) == 0

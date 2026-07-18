@@ -4,6 +4,13 @@ import argparse
 from collections.abc import Sequence
 
 from minoru_studio import __version__
+from minoru_studio.doctor import render_doctor, run_doctor
+
+
+def _doctor_command(args: argparse.Namespace) -> int:
+    report = run_doctor()
+    print(render_doctor(report, as_json=args.as_json))
+    return 0 if report.ok else 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -12,7 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="MinoruStudio local video-production tools",
     )
     parser.add_argument("--version", action="version", version=__version__)
-    parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command")
+    doctor_parser = subparsers.add_parser("doctor", help="check required local tools")
+    doctor_parser.add_argument("-Json", "--json", dest="as_json", action="store_true")
+    doctor_parser.set_defaults(handler=_doctor_command)
     return parser
 
 
