@@ -1,7 +1,9 @@
 import datetime
+import traceback
 import uuid
 
 from minoru_studio_resolve.contract import load_validated_job
+from minoru_studio_resolve.resolve_log import append_resolve_log
 from minoru_studio_resolve.state import TERMINAL_STATES, transition
 
 
@@ -32,6 +34,20 @@ class AdapterService(object):
         self.attempt_ids = attempt_ids or _ids()
         self.operation_tokens = operation_tokens or _ids()
         self.utc_now = utc_now or _utc_now
+
+    def _record_failure(self, root, event, detail, error, trace_text):
+        if root is None:
+            return
+        try:
+            append_resolve_log(
+                root,
+                event,
+                detail=detail,
+                error=error,
+                traceback_text=trace_text,
+            )
+        except Exception:
+            pass
 
     def _reject_existing_attempt(self, root, project_id, new_attempt):
         latest = self.applications.latest(root, project_id)
@@ -88,12 +104,12 @@ class AdapterService(object):
             if detail["state"] == "checking_still" and not stop_after_stage:
                 items = self.gateway.find_items(detail["bin"], detail["items"])
                 detail = self._check_still(validated, detail, items)
-        except AdapterError:
-            raise
-        except Exception as exc:
-            if detail is not None and root is not None:
+            append_resolve_log(root, "start.completed", detail=detail)
+        except AdapterError as exc:
+            trace_text = traceback.format_exc()
+            if detail is not None and root is not None and token is not None:
                 try:
-                    self.applications.fail(
+                    detail = self.applications.fail(
                         root,
                         detail["attempt_id"],
                         exc,
@@ -101,6 +117,33 @@ class AdapterService(object):
                     )
                 except Exception:
                     pass
+            self._record_failure(
+                root,
+                "start.failed",
+                detail,
+                exc,
+                trace_text,
+            )
+            raise
+        except Exception as exc:
+            trace_text = traceback.format_exc()
+            if detail is not None and root is not None:
+                try:
+                    detail = self.applications.fail(
+                        root,
+                        detail["attempt_id"],
+                        exc,
+                        token=token,
+                    )
+                except Exception:
+                    pass
+            self._record_failure(
+                root,
+                "start.failed",
+                detail,
+                exc,
+                trace_text,
+            )
             raise AdapterError("Resolve staging failed: {0}".format(exc))
         finally:
             if detail is not None and root is not None and token is not None:
@@ -215,22 +258,12 @@ class AdapterService(object):
                 )
             if detail["state"] == "checking_still":
                 detail = self._check_still(validated, detail, items)
-        except AdapterError:
+            append_resolve_log(root, "resume.completed", detail=detail)
+        except AdapterError as exc:
+            trace_text = traceback.format_exc()
             if detail is not None and root is not None and token is not None:
                 try:
-                    self.applications.fail(
-                        root,
-                        detail["attempt_id"],
-                        "Resolve resume failed",
-                        token=token,
-                    )
-                except Exception:
-                    pass
-            raise
-        except Exception as exc:
-            if detail is not None and root is not None and token is not None:
-                try:
-                    self.applications.fail(
+                    detail = self.applications.fail(
                         root,
                         detail["attempt_id"],
                         exc,
@@ -238,6 +271,33 @@ class AdapterService(object):
                     )
                 except Exception:
                     pass
+            self._record_failure(
+                root,
+                "resume.failed",
+                detail,
+                exc,
+                trace_text,
+            )
+            raise
+        except Exception as exc:
+            trace_text = traceback.format_exc()
+            if detail is not None and root is not None and token is not None:
+                try:
+                    detail = self.applications.fail(
+                        root,
+                        detail["attempt_id"],
+                        exc,
+                        token=token,
+                    )
+                except Exception:
+                    pass
+            self._record_failure(
+                root,
+                "resume.failed",
+                detail,
+                exc,
+                trace_text,
+            )
             raise AdapterError("Resolve resume failed: {0}".format(exc))
         finally:
             if detail is not None and root is not None and token is not None:
@@ -311,8 +371,16 @@ class AdapterService(object):
         try:
             confirmed = bool(confirm(summary))
         except Exception as exc:
+            self._record_failure(
+                root,
+                "apply.confirmation_failed",
+                detail,
+                exc,
+                traceback.format_exc(),
+            )
             raise AdapterError("confirmation failed: {0}".format(exc))
         if not confirmed:
+            append_resolve_log(root, "apply.cancelled", detail=detail)
             return detail
 
         token = next(self.operation_tokens)
@@ -350,12 +418,16 @@ class AdapterService(object):
             ):
                 raise AdapterError("final timeline is incomplete")
             detail["result"] = result
+            completed = dict(detail)
+            completed["state"] = "applied"
+            append_resolve_log(root, "apply.completed", detail=completed)
             transition(detail, "applied")
             detail = self.applications.update(root, detail)
         except Exception as exc:
+            trace_text = traceback.format_exc()
             if claimed:
                 try:
-                    self.applications.fail(
+                    detail = self.applications.fail(
                         root,
                         detail["attempt_id"],
                         exc,
@@ -363,6 +435,13 @@ class AdapterService(object):
                     )
                 except Exception:
                     pass
+            self._record_failure(
+                root,
+                "apply.failed",
+                detail,
+                exc,
+                trace_text,
+            )
             if isinstance(exc, AdapterError):
                 raise
             raise AdapterError("Resolve apply failed: {0}".format(exc))
