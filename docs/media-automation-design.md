@@ -1,241 +1,556 @@
-# ローカル音声・字幕付き動画の自動化ツール設計
+# MinoruStudio 総合動画制作ツール設計
 
 ## 1. ステータス
 
 - 本書は設計のみを対象とする。
-- ツール実装、依存関係の追加、VOICEVOX・Voicemeeter等のインストール、クラウドAPI呼び出しは本書の作成範囲に含めない。
-- 本書は動画関連資料としてMinoruDougaの `docs/` に保存するが、MinoruDouga本体への統合設計ではない。
-- 実装する場合も moneyplanner や MinoruDouga の本体には組み込まず、複数プロジェクトから利用できる個人用ローカルツールとして配置する。
-- MinoruDougaの `src/`、`scripts/`、Resolve連携、依存関係、インストーラーは変更対象外とする。
+- ツール実装、依存関係の追加、インストール、モデル取得、クラウドAPI呼び出しは本書の更新範囲に含めない。
+- MinoruStudioは、既存MinoruDougaの音ハメ機能を包含し、音声認識、字幕、読み上げ、デモ動画制作を扱う新しい個人用ローカルツールとする。
+- 対象OSはWindowsとし、DaVinci Resolve無償版への対応を必須とする。
+- 現行MinoruDougaは移植元として保持し、実装開始までは `src/`、`scripts/`、`install.ps1`、依存関係を変更しない。
+- GitHubリモートとの互換性や公開リポジトリへの同期は設計対象外とし、このローカルリポジトリで設計を進める。
 
 ## 2. 目的
 
-動画に対する次の作業を、PowerShellコマンドから再現可能な形で自動化する。
+動画制作の独立した作業を、再現可能な固定モードとして自動化する。
 
-1. 既存音声の文字起こしと字幕生成
-2. 台本からの読み上げ音声と字幕生成
-3. 画面録画からの台本案生成
-4. 音声の調整、動画への結合、字幕焼き込み
-5. 必要に応じたVoicemodによる声質変換
+1. 選択したBGMに静止画・動画を音ハメし、編集可能なResolveタイムラインを作る。
+2. 音声付き動画から文字起こしと字幕を作る。
+3. 台本からVOICEVOX音声と同期字幕を作る。
+4. 画面録画から台本作成用の代表フレームを作る。
+5. リポジトリを解析し、30〜60秒のデモ動画用台本とショットリストを作る。
+6. 手動収録したデモ素材、VOICEVOX音声、字幕をResolveタイムラインへ配置する。
 
-元動画は常に保持し、編集可能な字幕ファイルと、そのまま共有できる字幕付きMP4の両方を出力する。
+元動画や既存タイムラインは保持する。CLI側は編集可能なファイル成果物を作るところまでを標準とし、Resolveへの適用はユーザーが明示的に実行する。
 
-## 3. 採用アーキテクチャ
+## 3. 対象外
 
-PowerShellを利用者向けCLIとし、FFmpegと隔離されたPython処理を呼び出すハイブリッド構成を採用する。
+初期版では次を行わない。
 
-- エントリポイント: `~/.local/bin/media-auto.ps1`
-- ツール本体: `~/.local/share/media-auto/`
-- Python環境: `uv` 管理のPython 3.12
-- 動画・音声処理: FFmpeg / FFprobe
-- ローカル音声認識: faster-whisper、CPU、INT8
-- ローカル読み上げ: VOICEVOX Engine
-- 任意クラウド処理: プロバイダーアダプター経由。初期候補はOpenAI
-- 任意声質変換: Voicemod Desktop + Control API + 仮想オーディオ経路
+- 複数モードを任意の順序で接続する汎用ワークフローエンジン
+- Web、デスクトップ、モバイルアプリの自動操作・自動録画
+- DaVinci Resolve Studio専用の外部スクリプト制御
+- OpenAI APIへの直接接続
+- Voicemod、Voicemeeter、仮想オーディオ経路
+- macOSおよびLinux対応
+- Resolveからの最終レンダー完全自動化
 
-Pythonをシステム環境へ直接インストールせず、ツール専用環境へ固定する。モデル、音声エンジン、クラウドサービスは共通インターフェースの背後に置き、CLIや動画処理から分離する。
+これらは基本経路の安定後に、独立した追加機能として検討する。
 
-## 4. CLI
+## 4. 設計原則
 
-### 4.1 文字起こし
+### 4.1 固定モード
 
-```powershell
-media-auto transcribe input.mp4
+利用者向け機能は固定モードとして分離する。内部処理は共有してよいが、初期版では利用者が任意の工程グラフを構築する機能を持たせない。
+
+### 4.2 ファイル成果物を先に作る
+
+音声、字幕、台本、解析結果をResolveなしで作れるようにする。Resolveアダプターは完成済み成果物を読み、タイムラインへ適用する責任だけを持つ。
+
+### 4.3 明示的な外部送信
+
+既定はローカル処理とする。リポジトリ内容をCodexへ送る処理は、AI利用指定と送信確認の両方がある場合だけ実行する。
+
+### 4.4 元データを変更しない
+
+入力動画、BGM、素材、台本、既存タイムラインを自動で上書きまたは削除しない。設定や入力が変わった処理は新しいジョブとして作成する。
+
+## 5. 採用アーキテクチャ
+
+PowerShellランチャー、隔離されたPython処理コア、FFmpeg、Resolve内アダプターをジョブパッケージで接続する。
+
+```mermaid
+flowchart TB
+    user([ユーザー])
+    launcher["minoru-studio<br/>PowerShellランチャー"]
+    gui["モード選択GUI"]
+    core["Python処理コア<br/>uv管理"]
+    ffmpeg["FFmpeg / FFprobe"]
+    providers["faster-whisper / VOICEVOX / Codex CLI"]
+    job[(".media-job<br/>job.json / outputs / logs")]
+
+    subgraph resolve["DaVinci Resolve 無償版"]
+        adapter["MinoruStudio Resolveアダプター"]
+        api["Resolve Scripting API"]
+        timeline["新規・複製タイムライン"]
+    end
+
+    user --> launcher
+    launcher -->|引数なし| gui
+    launcher -->|固定モード| core
+    gui --> core
+    core --> ffmpeg
+    core --> providers
+    core <--> job
+    user -->|ジョブ適用| adapter
+    adapter <--> job
+    adapter --> api
+    api --> timeline
 ```
 
-処理内容:
+### 5.1 コンポーネント
+
+- **PowerShellランチャー**: `minoru-studio` コマンドを提供し、ツール専用Pythonを起動する。
+- **ランチャーGUI**: 引数なし起動時に、ジョブ作成、既存ジョブ、固定モード選択、ファイル選択、実行前確認を提供する。
+- **Python処理コア**: ジョブ管理、入力検査、モード処理、プロバイダー制御、成果物検証を担当する。
+- **FFmpeg / FFprobe**: 音声抽出、連結、字幕焼き込み、代表フレーム、確認用MP4、ストリーム検査を担当する。
+- **プロバイダー**: faster-whisper、VOICEVOX、Codex CLIを共通処理から分離する。
+- **Resolveアダプター**: Resolve内で動く薄いスクリプトとし、外部Python依存をResolve環境へ読み込まない。
+- **ジョブパッケージ**: CLI、GUI、処理コア、Resolveアダプターの唯一の受け渡し形式とする。
+
+### 5.2 配置方針
+
+- コマンド: `minoru-studio`
+- アプリ本体と専用Python環境: `%LOCALAPPDATA%\MinoruStudio\`
+- 設定: `%APPDATA%\MinoruStudio\config.json`
+- モデルキャッシュ: `%LOCALAPPDATA%\MinoruStudio\models\`
+- Resolveアダプター: Resolveのユーザー別 `Fusion\Scripts\Utility` 配下
+- Python: `uv` 管理のツール専用環境
+
+Pythonや依存ライブラリをResolve同梱PythonやシステムPythonへ直接インストールしない。
+
+## 6. CLIとGUI
+
+### 6.1 GUI起動
+
+```powershell
+minoru-studio
+```
+
+引数なしでは次のGUIを開く。
+
+1. 「新しいジョブ」または「既存ジョブを開く」
+2. 固定モードを選択
+3. ファイルと設定を入力
+4. 事前検査と実行内容を確認
+5. ジョブを作成して実行
+6. 成果物とResolve適用手順を表示
+
+GUIは薄い入力層とし、検証や処理ロジックを持たせない。
+
+### 6.2 非対話CLI
+
+```powershell
+minoru-studio <mode> [options]
+```
+
+サブコマンドは非対話で動く。必須引数が不足した場合にGUIを開かず、エラーと使用方法を返す。
+
+外部送信を伴う非対話処理は、AI利用指定に加えて送信確認フラグを必須とする。
+
+```powershell
+minoru-studio repo-demo C:\dev\sample -AI -ConfirmUpload
+```
+
+## 7. 固定モード
+
+### 7.1 `beat-sync`
+
+```powershell
+minoru-studio beat-sync -Music song.mp3 -MediaDir .\media
+```
+
+CLI側の処理:
+
+1. BGMと素材一覧を検査する。
+2. librosaでBGMのBPM、拍位置、長さを解析する。
+3. 拍位置を整数ミリ秒でジョブへ保存する。
+4. 素材一覧、並び順、拍間隔、タイムライン名を保存する。
+5. Resolveで適用可能な状態にする。
+
+Resolve側の処理:
+
+1. ジョブ専用ビンへBGMと素材をインポートする。
+2. 必要ならユーザーが動画へIn/Out点を指定できるよう一時停止する。
+3. 現在のタイムラインFPS、動画のソースFPS、In/Out点、スチル長を読み取る。
+4. ミリ秒の拍位置をタイムラインフレームへ変換する。
+5. 配置計画と必要なスチル長を表示して確認する。
+6. 新しいタイムラインへBGM、静止画、動画、拍マーカーを配置する。
+7. 配置後の実時間を測定し、動画のFPS換算によるずれを一度だけ補正する。
+
+現行MinoruDougaから次の動作を移植する。
+
+- 拡張子による写真・動画判定
+- 写真の個別インポート
+- 専用ビンへの再インポート
+- スチル長の実測とジャスト値案内
+- In/Out点を利用したハイライト指定
+- 素材ごとの使用位置と使用回数管理
+- 配置後の長さ実測と補正
+- ビート揺らぎ由来の±1フレーム許容
+
+### 7.2 `transcribe`
+
+```powershell
+minoru-studio transcribe input.mp4
+```
 
 1. FFmpegで音声トラックを抽出する。
-2. 指定時のみ保守的な音量正規化とノイズ低減を行う。
-3. faster-whisperで文字起こし、無音検出、タイムスタンプ生成を行う。
+2. 指定時だけ保守的な音量正規化とノイズ低減を行う。
+3. faster-whisperで文字起こし、VAD、タイムスタンプ生成を行う。
 4. TXT、SRT、VTTを生成する。
-5. SRTを焼き込んだMP4を生成する。
+5. 明示オプション時だけ、字幕を焼き込んだ確認用MP4を生成する。
 
-既定モデルはCPU負荷と日本語精度の均衡から `small` とし、`-Model medium` を選択可能にする。
+既定モデルはCPU負荷と日本語精度の均衡から `small`、既定計算はCPU INT8とする。`medium` を明示選択できるようにする。
 
-### 4.2 台本からの読み上げ
+### 7.3 `narrate`
 
 ```powershell
-media-auto narrate input.mp4 -Script script.txt
+minoru-studio narrate input.mp4 -Script script.txt
 ```
-
-処理内容:
 
 1. 台本を句読点と最大文字数で発話単位に分割する。
-2. 読み上げプロバイダーで発話単位ごとのWAVを生成する。
-3. FFprobeで各WAVの実時間を取得してSRTを組み立てる。
-4. 発話を連結し、動画の音声トラックへ結合する。
-5. SRTと字幕焼き込みMP4を出力する。
+2. VOICEVOXで発話単位ごとのWAVを生成する。
+3. FFprobeで各WAVの実時間を取得する。
+4. 発話間の間隔を含めてWAVを連結する。
+5. 実時間からSRTとVTTを生成する。
+6. Resolveへ適用可能な音声・字幕成果物を保存する。
+7. 明示オプション時だけ確認用MP4を生成する。
 
-既定の読み上げプロバイダーはローカルのVOICEVOXとする。クラウド読み上げとVoicemodは明示指定時のみ使用する。
+音声が元動画より長くても、自動で速度変更、切り捨て、台本短縮をしない。成果物を保持して警告する。
 
-### 4.3 画面録画からの台本案生成
+### 7.4 `script-draft`
 
 ```powershell
-media-auto auto input.mp4 -Cloud -ScriptProvider openai
+minoru-studio script-draft input.mp4
 ```
 
-処理内容:
+1. シーン変化と時間間隔から代表フレームを抽出する。
+2. フレーム、時刻、解像度を記録する。
+3. 人が記入できる台本テンプレートを作る。
 
-1. FFmpegでシーン変化と時間間隔を基に代表フレームを抽出する。
-2. 送信対象フレーム、時刻、解像度を `manifest.json` に記録する。
-3. クラウド利用が明示された場合のみ、代表フレームを台本生成プロバイダーへ送る。
-4. 生成した `script.txt` を保存し、読み上げ処理へ渡す。
+初期版では画像を外部へ送らず、ローカル画像モデルも同梱しない。
 
-初期版ではローカル画像モデルを同梱しない。`-Cloud` がない場合は代表フレームと台本テンプレートを生成して終了し、ユーザーまたはCodexが台本を補完できる状態にする。
+### 7.5 `repo-demo`
 
-## 5. 出力
+```powershell
+minoru-studio repo-demo C:\dev\sample
+minoru-studio repo-demo C:\dev\sample -AI -ConfirmUpload
+```
 
-既定では入力動画と同じ場所に `<元ファイル名>.media-auto` ディレクトリを作る。`-OutputDir` で変更できる。
+30〜60秒のVOICEVOXナレーション・字幕付きショートデモを対象とする。アプリの操作と画面録画は人が行う。
+
+#### ローカル準備
+
+1. README、設計資料、主要エントリポイント、利用方法、画像を候補化する。
+2. `.gitignore` を尊重する。
+3. `.env`、秘密鍵、証明書、認証ファイル、依存物、ビルド成果物、バイナリを強制除外する。
+4. AIへ送る候補ファイル、総容量、除外理由を表示する。
+5. AIを使用しない場合は、プロジェクト概要と記入用台本・ショットリストを生成して終了する。
+
+#### Codex処理
+
+AI利用指定と送信確認の両方がある場合だけ実行する。
+
+1. ユーザーが許可したファイルだけを一時バンドルへ複製する。
+2. Codex CLIを読み取り専用、`--ephemeral`、構造化出力指定で起動する。
+3. プロジェクト概要、台本、ショットリスト、構造化デモ計画を生成する。
+4. 各主張に根拠となるリポジトリ内ファイルを付ける。
+5. 構造化出力を検証する。
+6. 人が台本とショットリストを承認するまで音声生成へ進まない。
+
+Codex CLIが未導入、未ログイン、失敗、または構造化出力不正の場合は停止する。OpenAI APIや別のAIへ黙って切り替えない。
+
+#### 画面録画後
+
+1. ジョブを `awaiting_capture` として保存する。
+2. ユーザーが `inputs/captures/shot-01.mp4` のように画面録画を配置する。
+3. 再開時に必要な録画と長さを検査する。
+4. VOICEVOX音声、SRT、VTT、確認用MP4、Resolve配置計画を生成する。
+5. Resolveアダプターが新しいタイムラインへ録画、ナレーション、字幕を配置する。
+
+初期版ではBGM、自動操作、自動録画を `repo-demo` に含めない。
+
+## 8. ジョブパッケージ
+
+既定のジョブディレクトリ名は `<job-name>.media-job` とする。保存先はGUIまたは `-OutputDir` で指定できる。
 
 ```text
-<name>.media-auto/
-  manifest.json
-  script.txt
-  transcript.txt
-  subtitles.srt
-  subtitles.vtt
-  narration.wav
-  captioned.mp4
+<job-name>.media-job/
+  job.json
+  inputs/
+    script.txt
+    captures/
+  outputs/
+    beats.json
+    project-summary.md
+    demo-script.txt
+    shot-list.md
+    demo-plan.json
+    transcript.txt
+    subtitles.srt
+    subtitles.vtt
+    narration.wav
+    preview.mp4
   work/
   logs/
+    run.log
+  resolve/
+    apply-result.json
 ```
 
-- 元動画は上書きしない。
-- 既存の出力がある場合は停止し、`-Force` 指定時だけ置き換える。
-- `work/` は成功時に削除可能とし、失敗時は診断と再開のため保持する。
-- `manifest.json` には入力ハッシュ、処理日時、使用プロバイダー、モデル、FFmpeg引数、出力ファイルを記録する。APIキーや個人情報は記録しない。
+モードに不要なファイルやディレクトリは作らなくてよい。
 
-## 6. 音声・字幕プロバイダー
+### 8.1 `job.json`
 
-### 6.1 faster-whisper
+次を記録する。
 
-- 既定はローカルCPUのINT8。
-- VADで長い無音を除外する。
-- 単語またはセグメントのタイムスタンプからSRT/VTTを生成する。
-- 初回モデル取得にはネットワーク通信が発生するため、実行前にサイズと保存先を表示する。
+- スキーマバージョン、ジョブID、固定モード
+- 作成日時、更新日時、ジョブ状態
+- 入力ファイルの正規化済み絶対パス、サイズ、更新日時、SHA-256
+- モード固有設定
+- 整数ミリ秒のタイムスタンプ
+- 各処理段階の状態
+- 使用したツール、モデル、プロバイダー、バージョン
+- 外部プロセスの終了コード
+- 生成物のパス、ハッシュ、検査結果
+- エラー要約
+- Resolve適用状態
 
-### 6.2 VOICEVOX
+APIキー、Codex認証情報、個人情報、台本や字幕の本文はログ用フィールドへ複製しない。
 
-- 日本語の既定読み上げエンジンとする。
-- ローカルHTTP APIの `/audio_query` と `/synthesis` を利用する。
-- 話者、スタイル、話速をCLIオプションで指定可能にする。
-- エンジンが起動していない場合は、自動で別プロバイダーへ切り替えず、起動方法を示して停止する。
+### 8.2 入力の扱い
 
-### 6.3 クラウドプロバイダー
+- 大きな動画、BGM、素材は複製せず参照する。
+- 台本や手動録画など、ジョブの再現に必要な小さな入力は `inputs/` へコピーする。
+- 入力ハッシュと設定が一致する場合だけ成功済み工程を再利用する。
+- 入力が変化した場合は再開せず、新しいジョブを作る。
 
-- `-Cloud` とプロバイダー指定の両方がある場合だけ利用する。
-- APIキーは環境変数から読み、設定ファイルやログへ保存しない。
-- 台本生成では動画全体ではなく、`manifest.json` に列挙された代表フレームだけを送る。
-- 音声認識、台本生成、読み上げを個別に選択できるようにし、一つのクラウドサービスへ固定しない。
+### 8.3 上書き防止
 
-## 7. Voicemodの位置づけ
+- 元ファイルを変更しない。
+- 同名ジョブがある場合は黙って置換しない。
+- GUIでは「前回の続き」「完了済みジョブを開く」「新しいジョブを作る」「キャンセル」を選ばせる。
+- 新しいジョブは `<name>-002.media-job` のように別名で作る。
+- 同じジョブの再開では、失敗または未完了の工程だけを実行する。
 
-### 7.1 採用判断
+### 8.4 状態更新
 
-Voicemodは既定の読み上げエンジンではなく、生成済み音声へキャラクター性や声色を加える任意の後処理として採用する。
+工程状態は `pending`、`running`、`succeeded`、`failed`、`interrupted` とする。
 
-Voicemodの公式Control APIは、デスクトップアプリの声一覧取得、声の選択、パラメーター変更、Voice Changerの有効化などをWebSocket経由で制御できる。一方、音声ファイルを直接送信して変換済みファイルを受け取るバッチAPIは公式ドキュメントで確認できない。
+- `job.json` は一時ファイルへ書いてから置換する。
+- 同一ジョブの同時実行をロックファイルで防ぐ。
+- 異常終了で残った `running` は、次回起動時に `interrupted` として扱う。
+- `work/` は失敗時の診断と再開に必要な間は保持する。
 
-### 7.2 処理経路
+## 9. 時刻とフレーム
+
+ジョブ内の共通時刻単位は整数ミリ秒とする。
+
+```json
+{
+  "beats_ms": [502, 1007, 1511],
+  "duration_ms": 18342
+}
+```
+
+`beats_ms` には検出された拍だけを記録する。Resolveアダプターは配置境界を作る際に先頭の0msと曲末尾の `duration_ms` を加え、重複する境界を除外する。
+
+Resolve適用時に、対象タイムラインのフレームレートを使ってフレーム番号へ変換する。
 
 ```text
-VOICEVOXまたはクラウドTTS
-  -> narration-source.wav
-  -> 仮想オーディオ入力
-  -> Voicemod Desktop
-  -> Voicemod Virtual Microphone
-  -> FFmpegで録音
-  -> narration-voicemod.wav
+frame = round(time_ms × fps_numerator / (1000 × fps_denominator))
 ```
 
-Control APIは次の制御だけを担当する。
+23.976fpsや29.97fpsを浮動小数点の表示値だけで扱わず、可能な限り `24000/1001`、`30000/1001` のような有理数として扱う。最終的な配置精度はResolveの1フレーム単位とする。
 
-- Voicemodアプリへのクライアント登録
-- 利用可能な声の取得
-- 指定した声の選択
-- Voice Changerの状態確認と有効化
-- 選択中の声と処理結果のメタデータ記録
+現行MinoruDougaはlibrosaの拍位置を小数秒で保持し、`round(seconds × timeline_fps)` でフレーム化している。移植時は解析結果を整数ミリ秒へ正規化し、既存の配置結果と±1フレーム以内で一致することを検証する。
 
-音声ファイルの再生・ルーティングにはVoicemeeter等の仮想オーディオ経路が必要になる。変換後音声はFFmpegでVoicemod Virtual Microphoneから録音する。
+## 10. Resolveアダプター
 
-### 7.3 制約
+### 10.1 起動
 
-- Voicemod Desktopが起動し、ログイン済みである必要がある。
-- Control APIキーと、接続後最初の `registerClient` メッセージが必要である。
-- 仮想デバイス名は環境依存であり、初回セットアップが必要になる。
-- ファイル処理は実時間再生になるため、VOICEVOXや通常のFFmpeg処理より遅い。
-- 音声デバイス競合、先頭・末尾の無音、録音開始の同期ずれが起き得る。
-- Voicemod公式のオンラインTTSには公開された自動化APIが確認できないため、初期版の直接連携対象にはしない。
+Resolveの「ワークスペース → スクリプト → MinoruStudio → ジョブ適用」から起動する。
 
-このため `-VoiceProvider voicemod` は実験的機能として明示的に選ぶ。失敗時にVOICEVOXへ黙って切り替えず、元のTTS音声を保持してエラーを返す。
+DaVinci Resolve無償版では、CLIからResolveを直接操作する構成を前提にしない。Resolve内スクリプトを正式な適用経路とする。実装開始時に、使用中のResolveに同梱されたDeveloperドキュメントでAPIとライセンス制約を再確認する。
 
-## 8. プライバシーと安全性
+### 10.2 `beat-sync` の適用
 
-- 既定は完全ローカル処理とする。
-- クラウド送信前に対象ファイルと代表フレーム数を表示する。
-- `-DryRun` で送信予定とFFmpeg処理だけを確認できるようにする。
-- 連絡先、メールアドレス、認証情報などが映る可能性を警告する。
-- 元動画、台本、字幕を自動削除しない。
-- APIキー、Voicemod認証情報、個人情報をログへ出さない。
+1. `.media-job` を選択する。
+2. ジョブ状態と入力ハッシュを検査する。
+3. 専用ビンへ素材をインポートする。
+4. 必要ならIn/Out点の指定待ちダイアログを表示する。
+5. スチル長を実測する。
+6. 配置計画を表示して確認する。
+7. 新しいタイムラインを作る。
+8. 配置、実測、補正、検証を行う。
+9. 実際のフレーム位置を `resolve/apply-result.json` に記録する。
 
-## 9. エラー処理
+### 10.3 字幕・ナレーションの適用
 
-実行開始時にFFmpeg、FFprobe、Python環境、選択プロバイダーを検査する。必要なプロバイダーが利用できない場合は、代替サービスを自動選択せずに終了する。
+- `transcribe` は字幕トラックを追加する。
+- `narrate` は音声トラックと字幕トラックを追加する。
+- 既定では現在のタイムラインを複製し、複製先へ適用する。
+- 現在のタイムラインへ直接適用する場合は、明示選択と最終確認を必要とする。
 
-各段階は `manifest.json` に状態を記録し、再実行時に入力ハッシュと設定が一致する完了済み段階を再利用できるようにする。外部プロセスの終了コードが0でない場合、最終MP4を成功扱いにしない。
+### 10.4 重複適用
 
-## 10. 検証方針
+`apply-result.json` のプロジェクト、タイムライン、成果物ハッシュを照合する。同じジョブを同じタイムラインへ再適用しようとした場合は停止し、別タイムラインまたは新しいジョブを案内する。
 
-### 自動検証
+## 11. プロバイダー
 
-- CLI引数とプロバイダー選択
-- 台本分割とSRT時刻の単調増加
-- 既存出力の上書き防止
-- `manifest.json` への秘密情報非出力
-- クラウドプロバイダーのモック
-- Voicemod Control API WebSocketのモック
-- FFprobeによる映像・音声ストリーム、長さ、出力容量の検査
+### 11.1 faster-whisper
 
-### ローカル統合検証
+- 既定はローカルCPU INT8、`small` モデル。
+- VADで長い無音を除外する。
+- セグメントまたは単語タイムスタンプからSRT/VTTを作る。
+- 初回モデル取得前に、ネットワーク通信、推定容量、保存先を表示する。
 
-- 短い合成動画で文字起こし、SRT、字幕焼き込みを確認する。
-- VOICEVOXで日本語読み上げ、発話単位の字幕同期を確認する。
-- App Review用の18秒動画を使い、元動画を変更せず成果物を生成できることを確認する。
-- Voicemodは別ゲートとし、アプリ起動、声選択、仮想経路、録音同期を手動確認する。
+### 11.2 VOICEVOX
 
-## 11. 受入条件
+- 初期版の既定読み上げエンジンとする。
+- ローカルHTTP APIの `/audio_query` と `/synthesis` を利用する。
+- 話者、スタイル、話速を指定可能にする。
+- エンジンが起動していない場合は、起動方法を示して停止する。
+- 別の読み上げプロバイダーへ黙って切り替えない。
 
-- PowerShellから3モードを明示的に実行できる。
-- 既定処理では動画、音声、画像を外部へ送らない。
-- SRTと字幕焼き込みMP4の両方が生成される。
-- 元動画を変更または削除しない。
-- VOICEVOX、クラウド、Voicemodを明示的に切り替えられる。
+### 11.3 Codex CLI
+
+`repo-demo -AI` のリポジトリ解析だけに利用する。
+
+- Codex CLIの保存済み認証を利用し、認証情報をMinoruStudioへ複製しない。
+- 読み取り専用で起動する。
+- `--ephemeral` でセッション履歴を残さない。
+- 許可済みファイルだけを置いた専用一時ディレクトリを作業ディレクトリとし、元リポジトリのパスを入力へ含めない。
+- `--ignore-user-config` でユーザー設定のMCPや追加ツールを読み込まず、必要に応じて `--skip-git-repo-check` を指定する。
+- JSON Schemaに従う構造化出力を要求する。
+- Codexへリポジトリやジョブを編集させない。
+- 許可した一時バンドル以外を解析対象にしない。
+
+### 11.4 後続プロバイダー
+
+OpenAI API直接連携、クラウド音声認識、クラウドTTS、Voicemodは初期版へ含めない。追加する場合もプロバイダーアダプターとして分離し、明示指定と送信確認を必須とする。
+
+## 12. `repo-demo` の構造化出力
+
+`demo-plan.json` は少なくとも次を持つ。
+
+- プロジェクト名
+- 対象視聴者
+- デモの目的
+- 30〜60秒の目標時間
+- 一文の主要メッセージ
+- 場面の順序
+- 各場面の目的
+- 読み上げ文
+- 目標時間ミリ秒
+- 必要な画面操作
+- 期待する録画ファイル名
+- 字幕テキスト
+- 根拠にしたリポジトリ内ファイル
+
+台本全体の目標時間を30〜60秒とし、VOICEVOXで生成した実時間が範囲外になった場合は、台本を自動改変せず再レビューを求める。
+
+## 13. プライバシーと安全性
+
+- 既定では動画、音声、画像、リポジトリ内容を外部へ送らない。
+- AI送信前に対象ファイル、件数、総容量、除外理由を表示する。
+- `.gitignore` だけに依存せず、秘密情報向けの強制除外と内容検査を行う。
+- 連絡先、メールアドレス、認証情報、個人情報が含まれる可能性を警告する。
+- APIキー、Codex認証情報、VOICEVOX設定内の秘密情報をログへ出さない。
+- 外部プロセスのコマンドラインを記録する場合、秘密値をマスクする。
+- AIへ送ったファイルのパス、ハッシュ、容量を記録するが、内容をログへ複製しない。
+- 一時AIバンドルは成功後に削除し、送信ファイルのパス、ハッシュ、容量を記したマニフェストだけを保持する。`-KeepWork` 指定時はバンドルも保持する。
+- 元動画、台本、字幕、成功済み成果物を自動削除しない。
+
+## 14. エラー処理と再開
+
+- 起動時にPowerShell、ツール専用Python、FFmpeg、FFprobe、選択プロバイダーを検査する。
+- 外部プロセスの終了コードが0でも、成果物が存在しない、空、破損、または検査不合格なら失敗とする。
+- プロバイダー障害時に別サービスへ自動切り替えしない。
+- キャンセル時は子プロセスを正常終了させ、必要なら強制終了する。元データと成功済み成果物は保持する。
+- 入力ハッシュまたは設定が変化したジョブは再開しない。
+- Codexの構造化出力がスキーマ不一致なら採用せず、診断情報を残して停止する。
+- ナレーションが動画より長い場合は警告し、自動短縮しない。
+- Resolve API処理は完全なロールバックを前提にしない。
+- Resolve適用途中で失敗した場合、作成したビンやタイムラインを自動削除せず「未完成」と明示し、対象名を表示する。
+- すべての必須外部プロセス、成果物検査、Resolve検査が成功した場合だけ完了扱いにする。
+
+## 15. 検証方針
+
+### 15.1 自動検証
+
+- 固定モードごとのCLI引数
+- 引数なしGUIと非対話CLIの境界
+- `job.json` と `demo-plan.json` のスキーマ
+- 24、30、60、23.976、29.97fpsのミリ秒・フレーム変換
+- 台本分割、発話連結、SRT/VTT時刻の単調増加と重複防止
+- Windowsの空白、日本語、長いパス
+- 入力ハッシュ、上書き防止、ロック、失敗後の再開
+- 既存出力と元ファイルの非変更
+- ログとAI送信候補への秘密情報非出力
+- Codexの作業ディレクトリ外に置いた検査用ファイルを、AI入力や出力が参照しないこと
+- faster-whisper、VOICEVOX、Codex CLI、Resolve APIのモック
+- 外部コマンド失敗時の失敗伝播
+- FFprobeによる映像・音声ストリーム、長さ、容量の検査
+- `repo-demo` の30〜60秒制約と録画不足検出
+- 同一ジョブのResolve重複適用防止
+
+### 15.2 ローカル統合検証
+
+- 合成クリック音と短い素材で音ハメ位置を確認する。
+- Resolve無償版でIn/Out点、写真、動画、BGM、拍マーカーを確認する。
+- 現行MinoruDougaと新 `beat-sync` の配置結果を比較する。
+- 短い日本語音声でfaster-whisperのTXT、SRT、VTTを確認する。
+- VOICEVOXで発話別WAV、結合音声、字幕同期を確認する。
+- 小さなテスト用リポジトリからデモ台本とショットリストを生成する。
+- ダミー録画で確認用MP4とResolveタイムラインを生成する。
+- App Review用の短い実動画で、元動画を変更せず成果物を作れることを確認する。
+
+## 16. 受入条件
+
+- `minoru-studio` でGUIを開ける。
+- PowerShellから各固定モードを非対話実行できる。
+- 既定処理では動画、音声、画像、リポジトリ内容を外部へ送らない。
+- 元ファイルと既存タイムラインを変更または削除しない。
+- 音ハメ位置は期待位置から±1フレーム以内である。
+- In/Out点がある動画は指定区間を優先する。
+- `transcribe` と `narrate` はResolveなしで完了する。
+- SRTとVTTを生成し、明示指定時に確認用MP4を生成できる。
+- `repo-demo` は30〜60秒の台本とショットリストを生成する。
+- AI送信はAI利用指定と送信確認の両方がある場合だけ実行する。
+- `repo-demo` は台本承認と手動画面録画を挟んで再開できる。
+- Resolve適用後もカット、音声、字幕を編集できる。
 - プロバイダー障害時に黙ったフォールバックを行わない。
-- Voicemodを使用しない基本経路は仮想オーディオデバイスに依存しない。
-- すべての外部プロセス終了コードとFFprobe検査が成功した場合だけ完了扱いにする。
+- 外部プロセスと成果物検査がすべて成功した場合だけ完了扱いにする。
 
-## 12. 残余リスクと実装順序
+## 17. 将来の実装順序
 
-推奨実装順序は次のとおり。
+本節はロードマップであり、実装着手を意味しない。
 
-1. FFmpegによる字幕生成・焼き込み
-2. faster-whisperによるローカル文字起こし
-3. VOICEVOXによる台本読み上げ
-4. 明示的クラウド台本生成
-5. Voicemod実験アダプター
+本書は製品全体の傘設計であり、以下を一つの実装計画で同時に進めない。各段階の着手前に、その段階だけを対象とする詳細仕様、機械的な受入条件、実装計画を別途作成して承認する。
 
-Voicemod経路は仮想オーディオと実時間録音に依存するため、基本経路の安定後に分離して追加する。最大の残余リスクはWindows音声デバイス名と録音同期の環境差である。
+1. 共通基盤: ジョブスキーマ、CLI、GUI、ログ、再開、環境検査
+2. `beat-sync`: 現行MinoruDouga機能の移植とResolveアダプター確立
+3. `transcribe`: faster-whisperと字幕成果物
+4. `narrate`: VOICEVOX、音声連結、字幕同期
+5. `repo-demo` ローカル工程: 走査、送信候補、テンプレート、録画待ち
+6. `repo-demo -AI`: Codex CLI、構造化出力、台本承認
+7. デモ組み立て: 手動録画、VOICEVOX、字幕、確認用MP4、Resolveタイムライン
+8. 後続拡張: OpenAI API、Web自動撮影、Voicemod
 
-## 13. 公式資料
+既存MinoruDougaを最初の縦断テストとして利用し、基本動作を保ったまま段階的に移植する。
 
+## 18. 残余リスク
+
+- Resolve APIと無償版の挙動はバージョン差があるため、実装開始時と対応バージョン更新時に実機確認が必要である。
+- Resolve処理はトランザクションではなく、途中失敗時に未完成のビンやタイムラインが残る。
+- 23.976／29.97fpsやソースFPS変換では丸めが必要である。
+- 写真はResolveの標準スチル長へ依存する。
+- faster-whisperの日本語精度と実行時間は録音品質とCPUに依存する。
+- VOICEVOXの実時間は話者、話速、台本分割で変化する。
+- Codexの出力は決定的ではないため、人の台本承認を必須とする。
+- Codex CLIの読み取り専用モードが、許可済みバンドル外の読み取りまでOSレベルで遮断するとは限らない。専用一時ディレクトリ、ユーザー設定無効化、元パス非提示を実機検証し、入力境界を確認できなければ `-AI` を初期版で有効化しない。
+- 秘密情報検出には偽陰性があり得るため、送信前の人による確認を省略しない。
+- 大きなリポジトリではAIへ送る文脈量を制限する必要がある。
+
+## 19. 参考資料
+
+- [FFmpeg documentation](https://ffmpeg.org/ffmpeg.html)
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-- [FFmpeg documentation](https://www.ffmpeg.org/ffmpeg.html)
 - [VOICEVOX Engine](https://github.com/VOICEVOX/voicevox_engine)
 - [VOICEVOX Engine API](https://voicevox.github.io/voicevox_engine/api/)
-- [Voicemod Control API](https://control-api.voicemod.net/)
-- [Voicemod Control API reference](https://control-api.voicemod.net/api-reference/)
-- [Voicemodで音声ファイルを加工する公式手順](https://support.voicemod.net/hc/en-us/articles/360013375380-How-to-modify-an-audio-file-Voicemeeter-Banana)
-- [Voicemod録音の公式手順](https://support.voicemod.net/hc/en-us/articles/360013375460-How-to-record-your-own-voice-effects)
-- [OpenAI API models](https://developers.openai.com/api/docs/models)
-- [OpenAI Audio API](https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create)
+- [DaVinci Resolve Support Center](https://www.blackmagicdesign.com/support/)
+- [DaVinci Resolve Scripting API documentation mirror](https://wiki.dvresolve.com/developer-docs/scripting-api)（参照用。実装時はResolve同梱資料を正とする）
+- [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
+- [Codex CLI commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+- [librosa beat tracking](https://librosa.org/doc/latest/generated/librosa.beat.beat_track.html)
