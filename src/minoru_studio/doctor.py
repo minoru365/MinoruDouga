@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module, metadata
 import shutil
 import sys
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 
 from minoru_studio.processes import run_process
+from minoru_studio.transcribe.models import MODEL_SPECS, default_model_cache_dir, model_is_complete
 
 
 class CheckStatus(StrEnum):
@@ -64,6 +66,24 @@ def _external_check(
     return ToolCheck(name, True, CheckStatus.OK, path, version, "available")
 
 
+def _faster_whisper_check() -> ToolCheck:
+    try:
+        version = metadata.version("faster-whisper")
+        import_module("faster_whisper")
+    except metadata.PackageNotFoundError:
+        return ToolCheck(
+            "faster-whisper", True, CheckStatus.MISSING, None, None, "package is not installed"
+        )
+    except Exception:
+        return ToolCheck(
+            "faster-whisper", True, CheckStatus.ERROR, None, None, "package import failed"
+        )
+    cache_dir = default_model_cache_dir()
+    cached = [name for name in MODEL_SPECS if model_is_complete(cache_dir, name)]
+    message = "available; cached models: " + (", ".join(cached) if cached else "none")
+    return ToolCheck("faster-whisper", True, CheckStatus.OK, None, version, message)
+
+
 def run_doctor() -> DoctorReport:
     python_ok = sys.version_info[:2] == (3, 12)
     checks = [
@@ -79,6 +99,7 @@ def run_doctor() -> DoctorReport:
         _external_check("uv", ("uv",), ["--version"]),
         _external_check("ffmpeg", ("ffmpeg",), ["-version"]),
         _external_check("ffprobe", ("ffprobe",), ["-version"]),
+        _faster_whisper_check(),
     ]
     return DoctorReport(checks)
 

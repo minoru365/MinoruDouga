@@ -1,4 +1,5 @@
 import json
+from importlib.metadata import PackageNotFoundError
 
 from minoru_studio.doctor import CheckStatus, render_doctor, run_doctor
 
@@ -28,6 +29,7 @@ def test_doctor_reports_each_required_tool(monkeypatch):
         "uv",
         "ffmpeg",
         "ffprobe",
+        "faster-whisper",
     }
     assert all(check.status is CheckStatus.OK for check in report.checks)
 
@@ -48,3 +50,30 @@ def test_json_report_is_machine_readable(monkeypatch):
 
     assert payload["ok"] is False
     assert isinstance(payload["checks"], list)
+
+
+def test_faster_whisper_metadata_is_a_required_check(monkeypatch):
+    monkeypatch.setattr("minoru_studio.doctor.shutil.which", lambda name: "C:/tool.exe")
+    monkeypatch.setattr("minoru_studio.doctor._read_version", lambda path, args: "test-version")
+    monkeypatch.setattr("minoru_studio.doctor.metadata.version", lambda name: "1.2.1")
+
+    report = run_doctor()
+
+    check = next(item for item in report.checks if item.name == "faster-whisper")
+    assert check.required is True
+    assert check.status is CheckStatus.OK
+    assert check.version == "1.2.1"
+
+
+def test_missing_faster_whisper_fails_doctor(monkeypatch):
+    monkeypatch.setattr("minoru_studio.doctor.shutil.which", lambda name: "C:/tool.exe")
+    monkeypatch.setattr("minoru_studio.doctor._read_version", lambda path, args: "test-version")
+    monkeypatch.setattr(
+        "minoru_studio.doctor.metadata.version",
+        lambda name: (_ for _ in ()).throw(PackageNotFoundError(name)),
+    )
+
+    report = run_doctor()
+
+    assert not report.ok
+    assert next(item for item in report.checks if item.name == "faster-whisper").status is CheckStatus.MISSING
