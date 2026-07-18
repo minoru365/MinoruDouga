@@ -24,7 +24,8 @@ class LauncherController:
 
 
 def launch_gui(controller: LauncherController | None = None) -> None:
-    controller = controller or LauncherController()
+    if controller is None:
+        controller = LauncherController()
     root = tk.Tk()
     root.title("MinoruStudio")
     root.geometry("560x330")
