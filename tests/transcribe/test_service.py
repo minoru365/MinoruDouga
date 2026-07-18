@@ -36,8 +36,9 @@ def _write_pcm(path: Path) -> None:
 
 
 class Collaborators:
-    def __init__(self, *, has_audio: bool = True) -> None:
+    def __init__(self, *, has_audio: bool = True, has_video: bool = True) -> None:
         self.has_audio = has_audio
+        self.has_video = has_video
         self.probe_calls = 0
         self.extract_calls = 0
         self.worker_calls = 0
@@ -48,7 +49,7 @@ class Collaborators:
 
     def probe(self, source: Path) -> MediaInfo:
         self.probe_calls += 1
-        return MediaInfo(1_000, self.has_audio, True)
+        return MediaInfo(1_000, self.has_audio, self.has_video)
 
     def extract(
         self,
@@ -180,6 +181,83 @@ def test_input_without_audio_fails_before_worker_starts(tmp_path: Path):
     manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
     assert manifest.status is JobStatus.FAILED
     assert collaborators.worker_calls == 0
+
+
+def test_audio_only_preview_fails_during_probe_before_downstream_work(tmp_path: Path):
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"source")
+    collaborators = Collaborators(has_video=False)
+    service = _service(tmp_path, collaborators)
+
+    with pytest.raises(TranscriptionFailed, match="input validation") as raised:
+        service.create_and_run(_request(tmp_path, source, preview=True))
+
+    manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
+    assert raised.value.category == "input validation"
+    assert manifest.status is JobStatus.FAILED
+    assert manifest.steps["probe-input"].status.value == "failed"
+    assert not any(
+        step.status.value == "succeeded"
+        for name, step in manifest.steps.items()
+        if name != "probe-input"
+    )
+    assert collaborators.probe_calls == 1
+    assert collaborators.extract_calls == 0
+    assert collaborators.worker_calls == 0
+    assert collaborators.artifact_calls == 0
+    assert collaborators.preview_calls == 0
+
+
+def test_audio_only_transcription_runs_without_preview(tmp_path: Path):
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"source")
+    collaborators = Collaborators(has_video=False)
+
+    job_dir = _service(tmp_path, collaborators).create_and_run(_request(tmp_path, source))
+
+    manifest = JobStore().load(job_dir, recover_interrupted=False)
+    assert manifest.status is JobStatus.SUCCEEDED
+    assert collaborators.probe_calls == 1
+    assert collaborators.extract_calls == 1
+    assert collaborators.worker_calls == 1
+    assert collaborators.artifact_calls == 1
+    assert collaborators.preview_calls == 0
+
+
+def test_resume_revalidates_cached_audio_only_probe_for_preview(tmp_path: Path):
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"source")
+    collaborators = Collaborators(has_video=False)
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source))
+
+    def make_pre_fix_preview_job(manifest):
+        manifest.settings["preview"] = True
+        manifest.status = JobStatus.FAILED
+
+    JobStore().update(job_dir, make_pre_fix_preview_job)
+    collaborators.probe_calls = 0
+    collaborators.extract_calls = 0
+    collaborators.worker_calls = 0
+    collaborators.artifact_calls = 0
+    collaborators.preview_calls = 0
+
+    with pytest.raises(TranscriptionFailed, match="input validation") as raised:
+        service.resume(job_dir)
+
+    manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
+    assert manifest.status is JobStatus.FAILED
+    assert manifest.steps["probe-input"].status.value == "failed"
+    assert not any(
+        step.status.value == "succeeded"
+        for name, step in manifest.steps.items()
+        if name != "probe-input"
+    )
+    assert collaborators.probe_calls == 1
+    assert collaborators.extract_calls == 0
+    assert collaborators.worker_calls == 0
+    assert collaborators.artifact_calls == 0
+    assert collaborators.preview_calls == 0
 
 
 def test_resume_resets_invalid_work_and_following_steps_but_reuses_valid_probe(tmp_path: Path):

@@ -352,7 +352,7 @@ class TranscribeService:
         context: dict[str, Any] = {}
         steps = self._step_names(request.preview)
         validators: dict[str, Callable[[], bool]] = {
-            "probe-input": lambda: self._load_media_info(job_dir, context),
+            "probe-input": lambda: self._load_media_info(job_dir, context, request.preview),
             "extract-audio": lambda: self._wave_is_valid(job_dir / "work" / "inference.wav"),
             "transcribe": lambda: self._load_worker_result(job_dir, request, context),
             "render-artifacts": lambda: self._artifacts_valid(job_dir, False),
@@ -393,15 +393,14 @@ class TranscribeService:
 
     def _run_probe(self, job_dir: Path, request: TranscribeRequest, context: dict[str, Any]) -> int:
         media_info = self._probe(request.input_path)
-        if not media_info.has_audio:
-            raise _InputInvalid("input has no audio stream")
+        self._validate_media_info(media_info, request.preview)
         path = job_dir / "work" / "media-info.json"
         self._write_json(path, {
             "duration_ms": media_info.duration_ms,
             "has_audio": media_info.has_audio,
             "has_video": media_info.has_video,
         })
-        if not self._load_media_info(job_dir, context):
+        if not self._load_media_info(job_dir, context, request.preview):
             raise _InputInvalid("media probe output did not validate")
         versions = self._tool_versions()
         ffmpeg = getattr(versions, "ffmpeg", None)
@@ -552,7 +551,12 @@ class TranscribeService:
                 return False
         return True
 
-    def _load_media_info(self, job_dir: Path, context: dict[str, Any]) -> bool:
+    def _load_media_info(
+        self,
+        job_dir: Path,
+        context: dict[str, Any],
+        preview: bool = False,
+    ) -> bool:
         path = job_dir / "work" / "media-info.json"
         try:
             fingerprint_file(path)
@@ -564,7 +568,9 @@ class TranscribeService:
                 return False
             if type(data["has_audio"]) is not bool or type(data["has_video"]) is not bool:
                 return False
-            context["media_info"] = MediaInfo(duration, data["has_audio"], data["has_video"])
+            media_info = MediaInfo(duration, data["has_audio"], data["has_video"])
+            self._validate_media_info(media_info, preview)
+            context["media_info"] = media_info
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return False
         return True
@@ -722,6 +728,13 @@ class TranscribeService:
         if not isinstance(value, MediaInfo):
             raise _InputInvalid("media information is not available")
         return value
+
+    @staticmethod
+    def _validate_media_info(media_info: MediaInfo, preview: bool) -> None:
+        if not media_info.has_audio:
+            raise _InputInvalid("input has no audio stream")
+        if preview and not media_info.has_video:
+            raise _InputInvalid("preview requires a video stream")
 
     @staticmethod
     def _require_worker_result(context: dict[str, Any]) -> WorkerResult:
