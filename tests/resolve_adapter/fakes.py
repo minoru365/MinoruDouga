@@ -119,6 +119,8 @@ class FakeMediaPool:
         self.import_calls = []
         self.photo_import_batch_sizes = []
         self.imported_items = []
+        self.video_items = []
+        self.video_import_calls = 0
         self.deleted_timeline_ids = []
         self.fail_visual_append_after = None
         self._folder_number = 0
@@ -154,6 +156,8 @@ class FakeMediaPool:
                 kinds.append("video")
         if kinds and all(kind == "photo" for kind in kinds):
             self.photo_import_batch_sizes.append(len(paths))
+        if kinds and all(kind == "video" for kind in kinds):
+            self.video_import_calls += 1
         result = []
         for path, kind in zip(paths, kinds):
             self._item_number += 1
@@ -164,13 +168,19 @@ class FakeMediaPool:
             )
             self.current_folder.clips.append(item)
             self.imported_items.append(item)
+            if kind == "video":
+                self.video_items.append(item)
             result.append(item)
         return result
 
     def CreateEmptyTimeline(self, name):
         self._timeline_number += 1
+        if name.startswith("_MinoruStudio Probe "):
+            timeline_id = "probe-" + name[len("_MinoruStudio Probe "):]
+        else:
+            timeline_id = "timeline-{0}".format(self._timeline_number)
         timeline = FakeTimeline(
-            "timeline-{0}".format(self._timeline_number),
+            timeline_id,
             name,
             self.project.timeline_rate,
         )
@@ -232,6 +242,11 @@ class FakeProject:
     def GetMediaPool(self):
         return self.media_pool
 
+    def GetSetting(self, name):
+        if name == "timelineFrameRate":
+            return self.timeline_rate
+        return ""
+
     def GetCurrentTimeline(self):
         return self.current_timeline
 
@@ -247,6 +262,24 @@ class FakeProject:
         if 1 <= index <= len(timelines):
             return timelines[index - 1]
         return None
+
+    @property
+    def deleted_timeline_ids(self):
+        return self.media_pool.deleted_timeline_ids
+
+    @property
+    def final_timeline_ids(self):
+        return [
+            timeline.GetUniqueId()
+            for timeline in self.timelines
+            if not timeline.GetName().startswith("_MinoruStudio Probe ")
+        ]
+
+    @property
+    def current_timeline_id(self):
+        if self.current_timeline is None:
+            return None
+        return self.current_timeline.GetUniqueId()
 
 
 class FakeProjectManager:
