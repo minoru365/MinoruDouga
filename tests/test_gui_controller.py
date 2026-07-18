@@ -241,3 +241,126 @@ def test_opened_failed_transcription_resumes_without_validating_or_saving_new_fo
     assert "disabled" in mode_box.states
     buttons["文字起こしを開始"].command()
     assert len(calls) == 1
+
+
+def test_completed_transcription_inspection_resets_to_new_launcher_after_leaving_mode(monkeypatch, tmp_path):
+    buttons = {}
+    widgets = []
+
+    class Variable:
+        def __init__(self, value=None):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class Widget:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self.bindings = {}
+            self.command = kwargs.get("command")
+            self.text = kwargs.get("text")
+            self.states = []
+            if self.text:
+                buttons[self.text] = self
+            widgets.append(self)
+
+        def grid(self, *args, **kwargs):
+            return None
+
+        pack = grid
+        grid_remove = grid
+        columnconfigure = grid
+
+        def bind(self, event, callback):
+            self.bindings[event] = callback
+
+        def state(self, values):
+            self.states.extend(values)
+
+        def configure(self, **kwargs):
+            self.text = kwargs.get("text", self.text)
+            if self.text:
+                buttons[self.text] = self
+
+    class Root(Widget):
+        def title(self, *args):
+            return None
+
+        geometry = title
+        resizable = title
+        mainloop = title
+
+        def after(self, delay, callback):
+            callback()
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    completed_job = tmp_path / "completed.media-job"
+    manifest = SimpleNamespace(
+        name="completed",
+        mode=JobMode.TRANSCRIBE,
+        status=JobStatus.SUCCEEDED,
+        settings={"model": "small", "language": "ja"},
+    )
+    create_calls = []
+
+    class Controller:
+        def inspect_job(self, path):
+            return manifest
+
+        def transcription_model_prompt(self, model):
+            assert model == "small"
+            return ModelPrompt(True, model, 0, 0, 0, "cache")
+
+        def prepare_transcription(self, **kwargs):
+            create_calls.append(kwargs)
+            return tmp_path / "new.media-job"
+
+        def resume_transcription(self, *args, **kwargs):
+            raise AssertionError("completed inspection must not resume")
+
+    monkeypatch.setattr(gui.tk, "Tk", Root)
+    monkeypatch.setattr(gui.tk, "StringVar", Variable)
+    monkeypatch.setattr(gui.tk, "BooleanVar", Variable)
+    for name in ("Frame", "Label", "Entry", "Button", "Combobox", "LabelFrame", "Spinbox", "Checkbutton", "Radiobutton", "Separator"):
+        monkeypatch.setattr(gui.ttk, name, Widget)
+    monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **kwargs: str(completed_job))
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gui.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(gui, "load_beat_sync_settings", lambda: {"name": "beat-name", "output_dir": "beat-output"})
+    monkeypatch.setattr(
+        gui,
+        "load_transcribe_settings",
+        lambda: {"input": "input.mp4", "name": "transcribe-name", "output_dir": str(tmp_path)},
+    )
+    monkeypatch.setattr(gui, "save_transcribe_settings", lambda values: None)
+
+    gui.launch_gui(Controller())
+    mode_box = next(widget for widget in widgets if "values" in widget.kwargs and len(widget.kwargs["values"]) == len(JobMode))
+    transcribe_button = buttons["文字起こしを開始"]
+    mode_var = mode_box.kwargs["textvariable"]
+    buttons["既存ジョブを開く"].command()
+
+    assert transcribe_button.text == "完了済みジョブ（確認のみ）"
+    assert transcribe_button.states[-1] == "disabled"
+
+    mode_var.set(JobMode.REPO_DEMO.value)
+    mode_box.bindings["<<ComboboxSelected>>"]()
+    mode_var.set(JobMode.TRANSCRIBE.value)
+    mode_box.bindings["<<ComboboxSelected>>"]()
+
+    assert transcribe_button.text == "文字起こしを開始"
+    assert transcribe_button.states[-1] == "!disabled"
+
+    transcribe_button.command()
+
+    assert len(create_calls) == 1

@@ -370,10 +370,11 @@ def launch_gui(controller: LauncherController | None = None) -> None:
 
     current_transcribe_job: Path | None = None
     current_transcribe_model: str | None = None
+    completed_transcribe_inspection = False
     active_cancel_event: threading.Event | None = None
 
     def open_job() -> None:
-        nonlocal current_transcribe_job, current_transcribe_model
+        nonlocal current_transcribe_job, current_transcribe_model, completed_transcribe_inspection
         if active_cancel_event is not None:
             return
         selected = filedialog.askdirectory(title=".media-job を選択")
@@ -399,11 +400,13 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             if manifest.status.value in {"failed", "interrupted"}:
                 current_transcribe_job = Path(selected)
                 current_transcribe_model = transcribe_model_var.get()
+                completed_transcribe_inspection = False
                 transcribe_button.configure(text="文字起こしを再開")
                 transcribe_button.state(["!disabled"])
             elif manifest.status.value == "succeeded":
                 current_transcribe_job = None
                 current_transcribe_model = None
+                completed_transcribe_inspection = True
                 transcribe_button.configure(text="完了済みジョブ（確認のみ）")
                 transcribe_button.state(["disabled"])
             update_mode_fields()
@@ -632,13 +635,23 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     displayed_mode = JobMode.BEAT_SYNC.value
 
     def update_mode_fields(event=None) -> None:
-        nonlocal displayed_mode
+        nonlocal current_transcribe_job, current_transcribe_model, completed_transcribe_inspection, displayed_mode
         if displayed_mode in mode_defaults:
             mode_defaults[displayed_mode] = {
                 "name": name_var.get(),
                 "output_dir": output_var.get(),
             }
         selected_mode = mode_var.get()
+        if (
+            selected_mode != JobMode.TRANSCRIBE.value
+            and completed_transcribe_inspection
+            and active_cancel_event is None
+        ):
+            current_transcribe_job = None
+            current_transcribe_model = None
+            completed_transcribe_inspection = False
+            transcribe_button.configure(text="文字起こしを開始")
+            transcribe_button.state(["!disabled"])
         if selected_mode in mode_defaults:
             name_var.set(mode_defaults[selected_mode]["name"])
             output_var.set(mode_defaults[selected_mode]["output_dir"])
