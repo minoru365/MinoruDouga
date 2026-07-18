@@ -98,10 +98,63 @@ def test_word_timestamps_determine_cue_interval():
     assert [(cue.start_ms, cue.end_ms) for cue in cues] == [(400, 700), (1_300, 1_600)]
 
 
+def test_mismatched_word_text_falls_back_without_replacing_segment_text():
+    result = result_with_segment(
+        "正しい文。",
+        start_ms=100,
+        end_ms=500,
+        words=(WordResult(200, 400, "別の文。"),),
+    )
+
+    cues = build_cues(result)
+
+    assert [("".join(cue.lines), cue.start_ms, cue.end_ms) for cue in cues] == [
+        ("正しい文。", 100, 500)
+    ]
+
+
+def test_all_zero_length_word_spans_fall_back_to_segment_timing():
+    result = result_with_segment(
+        "正しい文。",
+        start_ms=100,
+        end_ms=500,
+        words=(WordResult(100, 100, "正しい文。"),),
+    )
+
+    cues = build_cues(result)
+
+    assert [(cue.start_ms, cue.end_ms) for cue in cues] == [(100, 500)]
+
+
 def test_segment_interval_is_proportionally_distributed_without_word_spans():
     cues = build_cues(result_with_segment("あ。い。", start_ms=100, end_ms=500))
 
     assert [(cue.start_ms, cue.end_ms) for cue in cues] == [(100, 300), (300, 500)]
+
+
+def test_zero_length_cue_uses_backward_only_silence_when_it_cannot_merge():
+    import minoru_studio.transcribe.subtitles as subtitles
+
+    repaired = subtitles._repair_intervals(
+        [
+            subtitles._DraftCue("a" * 42, 100, 101),
+            subtitles._DraftCue("b", 102, 102),
+        ],
+        duration_ms=102,
+    )
+
+    assert [(cue.text, cue.start_ms, cue.end_ms) for cue in repaired] == [
+        ("a" * 42, 100, 101),
+        ("b", 101, 102),
+    ]
+
+
+def test_whitespace_is_not_a_preferred_boundary_before_hard_split():
+    text = "a" * 20 + " " + "b" * 22
+
+    cues = build_cues(result_with_segment(text))
+
+    assert ["".join(cue.lines) for cue in cues] == [text[:42], text[42:]]
 
 
 def test_overlap_from_rounded_spans_is_repaired_monotonically():

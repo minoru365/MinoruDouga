@@ -100,17 +100,56 @@ def write_artifacts(job_dir: str | Path, result: WorkerResult) -> tuple[Path, Pa
 
 
 def _build_segment_drafts(segment: SegmentResult) -> list[_DraftCue]:
-    if segment.words:
-        characters = [
-            character
-            for word in segment.words
-            for character in _timed_characters(word.text, word.start_ms, word.end_ms)
-        ]
-    else:
+    characters = _word_characters(segment)
+    if characters is None:
         characters = _timed_characters(
             segment.text, segment.start_ms, segment.end_ms, non_space_only=True
         )
     return _split_characters(characters)
+
+
+def _word_characters(segment: SegmentResult) -> list[_TimedCharacter] | None:
+    if not segment.words or any(word.end_ms <= word.start_ms for word in segment.words):
+        return None
+    word_text = "".join(word.text for word in segment.words)
+    trimmed_word_text = word_text.strip()
+    trimmed_segment_text = segment.text.strip()
+    if trimmed_word_text != trimmed_segment_text:
+        return None
+
+    word_characters = [
+        character
+        for word in segment.words
+        for character in _timed_characters(word.text, word.start_ms, word.end_ms)
+    ]
+    first = next(
+        (index for index, character in enumerate(word_characters) if not character.character.isspace()),
+        None,
+    )
+    last = next(
+        (
+            index
+            for index in range(len(word_characters) - 1, -1, -1)
+            if not word_characters[index].character.isspace()
+        ),
+        None,
+    )
+    if first is None or last is None:
+        return None
+    core = word_characters[first : last + 1]
+    if "".join(character.character for character in core) != trimmed_segment_text:
+        return None
+
+    leading_length = len(segment.text) - len(segment.text.lstrip())
+    trailing_length = len(segment.text) - len(segment.text.rstrip())
+    return [
+        *(_TimedCharacter(character, core[0].start_ms, core[0].start_ms) for character in segment.text[:leading_length]),
+        *core,
+        *(
+            _TimedCharacter(character, core[-1].end_ms, core[-1].end_ms)
+            for character in segment.text[len(segment.text) - trailing_length :]
+        ),
+    ]
 
 
 def _timed_characters(
@@ -164,9 +203,6 @@ def _preferred_break(characters: list[_TimedCharacter]) -> int:
         for index in range(len(characters) - 1, -1, -1):
             if characters[index].character in allowed:
                 return index + 1
-    for index in range(len(characters) - 1, -1, -1):
-        if characters[index].character.isspace():
-            return index + 1
     return MAX_CUE_CODEPOINTS
 
 
@@ -203,6 +239,12 @@ def _repair_intervals(drafts: list[_DraftCue], duration_ms: int) -> list[_DraftC
                 start_ms,
                 max(end_ms, following.end_ms),
             )
+            index += 1
+            continue
+
+        previous_end = repaired[-1].end_ms if repaired else 0
+        if start_ms - 1 >= previous_end:
+            repaired.append(_DraftCue(draft.text, start_ms - 1, start_ms))
             index += 1
             continue
 
