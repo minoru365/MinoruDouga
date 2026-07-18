@@ -105,6 +105,10 @@ class _ModelUnavailable(RuntimeError):
     pass
 
 
+class _LoggerSetupFailure(RuntimeError):
+    pass
+
+
 class _WorkerExit(RuntimeError):
     def __init__(self, exit_code: int) -> None:
         self.exit_code = exit_code
@@ -112,6 +116,14 @@ class _WorkerExit(RuntimeError):
 
 
 Progress = Callable[[str], object]
+
+
+class _NoOpLogger:
+    def info(self, message: str, *args: object) -> None:
+        return None
+
+    def error(self, message: str, *args: object) -> None:
+        return None
 
 
 class TranscribeService:
@@ -221,11 +233,15 @@ class TranscribeService:
         cancel_event: object | None,
         progress: Progress | None,
     ) -> Path:
-        logger = self._logger_factory(job_dir)
+        logger: logging.Logger | _NoOpLogger = _NoOpLogger()
         current_step: str | None = None
         category = "input validation"
         exit_code: int | None = None
         try:
+            try:
+                logger = self._logger_factory(job_dir)
+            except Exception as exc:
+                raise _LoggerSetupFailure from exc
             context, start_at = self._reconcile(job_dir, request)
             steps = self._step_names(request.preview)
             for index in range(start_at, len(steps)):
@@ -293,7 +309,13 @@ class TranscribeService:
         except Exception as exc:
             if isinstance(exc, _WorkerExit):
                 exit_code = exc.exit_code
-            failure_category = "model unavailable" if isinstance(exc, _ModelUnavailable) else category
+            failure_category = (
+                "job logging"
+                if isinstance(exc, _LoggerSetupFailure)
+                else "model unavailable"
+                if isinstance(exc, _ModelUnavailable)
+                else category
+            )
             self._mark_failed(job_dir, current_step, failure_category, exc, exit_code)
             logger.error(
                 "step=%s category=%s exception=%s exit_code=%s",

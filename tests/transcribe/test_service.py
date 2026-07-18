@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 import struct
 import threading
@@ -110,7 +111,12 @@ class Collaborators:
         return destination
 
 
-def _service(tmp_path: Path, collaborators: Collaborators) -> TranscribeService:
+def _service(
+    tmp_path: Path,
+    collaborators: Collaborators,
+    *,
+    logger_factory=None,
+) -> TranscribeService:
     return TranscribeService(
         store=JobStore(),
         probe=collaborators.probe,
@@ -122,6 +128,7 @@ def _service(tmp_path: Path, collaborators: Collaborators) -> TranscribeService:
         model_cache_dir=tmp_path / "models",
         model_complete=lambda cache, model: collaborators.model_complete,
         require_capacity=lambda cache, model: 10_000_000_000,
+        **({"logger_factory": logger_factory} if logger_factory is not None else {}),
     )
 
 
@@ -321,3 +328,29 @@ def test_resume_rejects_non_transcription_mode_and_terminal_success(tmp_path: Pa
     JobStore().update(job_dir, lambda manifest: setattr(manifest, "mode", JobMode.NARRATE))
     with pytest.raises(RuntimeError, match="not a transcription"):
         service.resume(job_dir)
+
+
+def test_logger_setup_failure_marks_job_failed_and_allows_a_later_resume(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    setup_failure = [True]
+
+    def logger_factory(job_dir: Path):
+        if setup_failure[0]:
+            raise OSError("recognized provider text must not be persisted")
+        return logging.getLogger("test.transcribe.service")
+
+    service = _service(tmp_path, collaborators, logger_factory=logger_factory)
+    with pytest.raises(TranscriptionFailed, match="job logging") as failed:
+        service.create_and_run(_request(tmp_path, source))
+
+    manifest = JobStore().load(failed.value.job_dir, recover_interrupted=False)
+    assert manifest.status is JobStatus.FAILED
+    assert manifest.last_error == "job logging"
+    assert "recognized provider text" not in str(failed.value)
+    assert "recognized provider text" not in (manifest.last_error or "")
+
+    setup_failure[0] = False
+    assert service.resume(failed.value.job_dir) == failed.value.job_dir
+    assert JobStore().load(failed.value.job_dir, recover_interrupted=False).status is JobStatus.SUCCEEDED
