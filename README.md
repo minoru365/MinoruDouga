@@ -71,6 +71,50 @@ uv run minoru-studio
 入力値は `%APPDATA%\MinoruStudio\config.json` に保存されますが、許可された
 画面項目以外は保存しません。
 
+## 文字起こし（0.3.0受入前）
+
+この機能は実モデル受入前の pre-release です。ローカルの FFmpeg と
+faster-whisper を使い、入力メディア・ジョブ・生成物を外部サービスへ送信しません。
+初回に model が cache にない場合も、`-AllowModelDownload` を明示しない限り
+download は開始しません。
+
+```powershell
+uv run minoru-studio transcribe .\sample.mp4 `
+  -Name demo-transcribe `
+  -OutputDir .\jobs `
+  -Preview
+
+# 未キャッシュ model を使う場合だけ、利用者が明示して追加する
+uv run minoru-studio transcribe .\sample.mp4 `
+  -Name demo-transcribe `
+  -OutputDir .\jobs `
+  -Preview `
+  -AllowModelDownload
+
+uv run minoru-studio transcribe resume .\jobs\demo-transcribe.media-job
+```
+
+引数なし GUI (`uv run minoru-studio`) ではモードを `transcribe` にして、入力動画・
+音声、model（`small` / `medium`）、language、音量正規化、ノイズ軽減、字幕付き
+preview を選択します。失敗または中断した job は同じ画面で開いて再開できます。
+
+成功すると `.media-job/outputs/` に `transcript.txt`、`subtitles.srt`、
+`subtitles.vtt`、および video 入力で要求した場合の `preview.mp4` が作られます。
+model cache は既定で `%LOCALAPPDATA%\MinoruStudio\models\faster-whisper` に置かれます。
+入力は job manifest の fingerprint と照合し、変更されていれば再開を拒否します。
+audio-only 入力には `-Preview` を指定できず、推論前に停止します。
+
+環境を確認するには次を実行します。`doctor` は FFmpeg、FFprobe、faster-whisper のほか、
+Python、PowerShell、uv も確認します。
+
+```powershell
+uv run minoru-studio transcribe --help
+uv run minoru-studio doctor --json
+```
+
+実モデルの受入手順と記録欄は [文字起こし受入 runbook](docs/transcribe-acceptance.md) を
+使用してください。この README は受入完了や 0.3.0 の提供開始を宣言するものではありません。
+
 ## 基盤コマンド
 
 ```powershell
