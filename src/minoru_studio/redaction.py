@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(api[_-]?key|access[_-]?token|auth|password|secret)"
-    r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
+    r'''(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+)'''
 )
 
 

@@ -18,6 +18,12 @@ def test_redact_text_masks_entire_quoted_secret_shaped_assignment():
     assert redacted == "password=***"
 
 
+def test_redact_text_masks_escaped_double_quote_in_assignment():
+    redacted = redact_text(r'password="alpha\" beta"')
+    assert 'alpha\\" beta' not in redacted
+    assert redacted == "password=***"
+
+
 def test_job_logger_never_writes_known_secret(tmp_path):
     logger = configure_job_logger(tmp_path, secrets=["top-secret"])
     logger.info("credential=top-secret")
