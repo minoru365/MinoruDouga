@@ -5,7 +5,6 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import struct
 from typing import Callable
 from uuid import uuid4
@@ -194,7 +193,7 @@ def _measure_loudness(
 ) -> dict[str, float]:
     filter_value = _audio_filter(denoise, measurement=True)
     args = [
-        "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source),
+        "ffmpeg", "-nostdin", "-v", "info", "-y", "-i", str(source),
         "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
         "-af", filter_value, "-f", "null", "-",
     ]
@@ -223,20 +222,18 @@ def _audio_filter(
 
 
 def _parse_loudness_statistics(stderr: str) -> dict[str, float]:
-    candidates = re.findall(r"\{[^{}]*\}", stderr, flags=re.DOTALL)
-    for candidate in reversed(candidates):
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
+    final_object_start = stderr.rfind("{")
+    if final_object_start < 0:
+        raise ValueError("invalid loudness statistics")
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(stderr[final_object_start:])
         required = ("input_i", "input_lra", "input_tp", "input_thresh", "target_offset")
-        try:
-            values = {name: float(payload[name]) for name in required}
-        except (KeyError, TypeError, ValueError):
-            continue
-        if all(math.isfinite(value) for value in values.values()):
-            return values
-    raise ValueError("invalid loudness statistics")
+        values = {name: float(payload[name]) for name in required}
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid loudness statistics") from exc
+    if not all(math.isfinite(value) for value in values.values()):
+        raise ValueError("invalid loudness statistics")
+    return values
 
 
 def _validate_pcm_wav(path: Path) -> None:

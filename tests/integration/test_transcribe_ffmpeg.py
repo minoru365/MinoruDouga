@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+import wave
 
 import pytest
 
@@ -31,3 +32,21 @@ def test_ffmpeg_extracts_audio_and_renders_japanese_preview(tmp_path):
     assert wav.exists()
     preview = render_preview(source, subtitles, tmp_path / "preview.mp4", MediaInfo(info.duration_ms, True, True), cancel_event=None)
     assert preview.exists()
+
+
+def test_ffmpeg_normalized_extraction_produces_valid_pcm(tmp_path):
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:a", "aac", str(source),
+        ], check=True,
+    )
+
+    wav = extract_audio(source, tmp_path / "work" / "normalized.wav", normalize=True, denoise=False, cancel_event=None)
+
+    with wave.open(str(wav), "rb") as output:
+        assert output.getnchannels() == 1
+        assert output.getframerate() == 16_000
+        assert output.getsampwidth() == 2
+        assert output.getnframes() > 0

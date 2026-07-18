@@ -112,11 +112,31 @@ def test_extract_audio_normalization_orders_denoise_before_loudnorm_and_uses_mea
         return result(stderr="analysis\n" + measurements)
 
     extract_audio(source, destination, normalize=True, denoise=True, runner=runner, cancel_event=None)
+    assert calls[0][calls[0].index("-v") + 1] == "info"
     assert DENOISE_FILTER in calls[0][calls[0].index("-af") + 1]
     assert LOUDNESS_TARGET in calls[0][calls[0].index("-af") + 1]
     assert calls[0][calls[0].index("-af") + 1].index(DENOISE_FILTER) < calls[0][calls[0].index("-af") + 1].index(LOUDNESS_TARGET)
     second_filter = calls[1][calls[1].index("-af") + 1]
     assert "measured_I=-20.1" in second_filter and "linear=true" in second_filter
+
+
+def test_extract_audio_rejects_invalid_final_loudness_statistics_object(tmp_path):
+    destination = tmp_path / "work" / "inference.wav"
+    valid = json.dumps({
+        "input_i": "-20.1", "input_lra": "3.2", "input_tp": "-1.0",
+        "input_thresh": "-30.0", "target_offset": "0.4",
+    })
+
+    def runner(args, **kwargs):
+        if args[-1] != "-":
+            write_pcm(Path(args[-1]))
+        return result(stderr=valid + "\n" + json.dumps({"input_i": "nan"}))
+
+    with pytest.raises(ValueError, match="loudness"):
+        extract_audio(
+            tmp_path / "source.mp4", destination, normalize=True, denoise=False,
+            runner=runner, cancel_event=None,
+        )
 
 
 def test_extract_audio_rejects_malformed_loudness_statistics(tmp_path):
