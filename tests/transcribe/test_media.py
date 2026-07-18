@@ -10,6 +10,7 @@ import pytest
 from minoru_studio.processes import ProcessResult
 from minoru_studio.transcribe.media import (
     DENOISE_FILTER,
+    FontChoice,
     LOUDNESS_TARGET,
     MediaInfo,
     MediaToolVersions,
@@ -215,6 +216,38 @@ def test_render_preview_escapes_windows_filter_path_and_validates_before_replace
     assert "\\\\" not in filter_value
     assert "force_style=FontName=Yu Gothic" in filter_value
     assert destination.read_bytes() == b"preview"
+
+
+def test_render_preview_uses_explicit_preflight_font_without_resolving_another(tmp_path, monkeypatch):
+    source = tmp_path / "source.mp4"
+    subtitles = tmp_path / "captions.srt"
+    subtitles.touch()
+    destination = tmp_path / "preview.mp4"
+    font_file = tmp_path / "Fonts" / "meiryo.ttc"
+    font_file.parent.mkdir()
+    font_file.touch()
+    calls: list[list[str]] = []
+
+    def runner(args, **kwargs):
+        calls.append(list(args))
+        if args[0] == "ffmpeg":
+            Path(args[-1]).write_bytes(b"preview")
+            return result()
+        return result(stdout=probe_payload("1"))
+
+    monkeypatch.setattr(
+        "minoru_studio.transcribe.media.resolve_japanese_font",
+        lambda: pytest.fail("renderer must use the supplied font"),
+    )
+    render_preview(
+        source, subtitles, destination, MediaInfo(1_000, True, True),
+        font=FontChoice("Meiryo", font_file), runner=runner, cancel_event=None,
+    )
+
+    filter_value = calls[0][calls[0].index("-vf") + 1]
+    font_directory = str(font_file.parent).replace("\\", "/").replace(":", "\\:")
+    assert f"fontsdir='{font_directory}'" in filter_value
+    assert "force_style=FontName=Meiryo" in filter_value
 
 
 def test_validate_preview_accepts_inclusive_duration_boundary_and_requires_both_streams(tmp_path):

@@ -13,11 +13,13 @@ from minoru_studio.jobs.model import JobMode, JobStatus
 from minoru_studio.jobs.store import JobStore
 from minoru_studio.processes import ProcessResult
 from minoru_studio.transcribe.contracts import (
+    SegmentResult,
     WorkerResult,
+    WordResult,
     load_worker_request,
     save_worker_result,
 )
-from minoru_studio.transcribe.media import MediaInfo, MediaToolVersions
+from minoru_studio.transcribe.media import FontChoice, MediaInfo, MediaToolVersions
 from minoru_studio.transcribe.service import (
     TranscribeRequest,
     TranscribeService,
@@ -46,6 +48,10 @@ class Collaborators:
         self.preview_calls = 0
         self.model_complete = True
         self.worker_error: Exception | None = None
+        self.worker_result: WorkerResult | None = None
+        self.font: FontChoice | None = None
+        self.font_error: Exception | None = None
+        self.preview_fonts: list[FontChoice] = []
 
     def probe(self, source: Path) -> MediaInfo:
         self.probe_calls += 1
@@ -71,7 +77,7 @@ class Collaborators:
         request = load_worker_request(args[-1])
         save_worker_result(
             request.output_json,
-            WorkerResult(
+            self.worker_result or WorkerResult(
                 schema_version=1,
                 model=request.model,
                 provider_version="1.2.1",
@@ -104,12 +110,21 @@ class Collaborators:
         destination: Path,
         media_info: MediaInfo,
         *,
+        font: FontChoice,
         cancel_event: object | None,
     ) -> Path:
         self.preview_calls += 1
+        self.preview_fonts.append(font)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"preview")
         return destination
+
+    def resolve_font(self) -> FontChoice:
+        if self.font_error is not None:
+            raise self.font_error
+        if self.font is None:
+            raise FileNotFoundError("no test Japanese font")
+        return self.font
 
 
 def _service(
@@ -125,6 +140,7 @@ def _service(
         worker=collaborators.worker,
         artifacts=collaborators.artifacts,
         preview_renderer=collaborators.preview,
+        font_resolver=collaborators.resolve_font,
         tool_versions=lambda: MediaToolVersions("ffmpeg 7.1", "ffprobe 7.1"),
         model_cache_dir=tmp_path / "models",
         model_complete=lambda cache, model: collaborators.model_complete,
@@ -343,6 +359,10 @@ def test_preview_is_an_optional_final_step_and_artifact(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
     collaborators = Collaborators()
+    font_file = tmp_path / "Fonts" / "YuGothR.ttc"
+    font_file.parent.mkdir()
+    font_file.touch()
+    collaborators.font = FontChoice("Yu Gothic", font_file)
 
     job_dir = _service(tmp_path, collaborators).create_and_run(_request(tmp_path, source, preview=True))
 
@@ -352,6 +372,117 @@ def test_preview_is_an_optional_final_step_and_artifact(tmp_path: Path):
         "transcript-txt", "subtitles-srt", "subtitles-vtt", "preview-mp4"
     }
     assert collaborators.preview_calls == 1
+    assert collaborators.preview_fonts == [FontChoice("Yu Gothic", font_file)]
+    assert manifest.tools["preview-font"] == "Yu Gothic"
+
+
+def test_preview_missing_font_fails_during_probe_before_downstream_work(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    service = _service(tmp_path, collaborators)
+
+    with pytest.raises(TranscriptionFailed, match="input validation") as raised:
+        service.create_and_run(_request(tmp_path, source, preview=True))
+
+    manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
+    assert manifest.steps["probe-input"].status.value == "failed"
+    assert collaborators.probe_calls == 1
+    assert collaborators.extract_calls == 0
+    assert collaborators.worker_calls == 0
+    assert collaborators.artifact_calls == 0
+    assert collaborators.preview_calls == 0
+
+
+def test_worker_result_beyond_probed_duration_is_input_validation_before_artifacts(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    collaborators.worker_result = WorkerResult(
+        schema_version=1,
+        model="small",
+        provider_version="1.2.1",
+        language="ja",
+        language_probability=1.0,
+        duration_ms=2_000,
+        duration_after_vad_ms=2_000,
+        no_speech=False,
+        segments=(SegmentResult(1_100, 2_000, "安全な確認", (WordResult(1_100, 2_000, "確認"),)),),
+    )
+
+    with pytest.raises(TranscriptionFailed, match="input validation") as raised:
+        _service(tmp_path, collaborators).create_and_run(_request(tmp_path, source))
+
+    manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
+    assert raised.value.category == "input validation"
+    assert manifest.last_error == "input validation"
+    assert collaborators.artifact_calls == 0
+    assert collaborators.preview_calls == 0
+
+
+def test_resume_resets_cached_worker_result_beyond_probed_duration_and_downstream_artifacts(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    font_file = tmp_path / "Fonts" / "YuGothR.ttc"
+    font_file.parent.mkdir()
+    font_file.touch()
+    collaborators.font = FontChoice("Yu Gothic", font_file)
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source, preview=True))
+    malicious = WorkerResult(
+        schema_version=1,
+        model="small",
+        provider_version="1.2.1",
+        language="ja",
+        language_probability=1.0,
+        duration_ms=2_000,
+        duration_after_vad_ms=2_000,
+        no_speech=False,
+        segments=(SegmentResult(1_100, 2_000, "確認", ()),),
+    )
+    save_worker_result(job_dir / "work" / "raw-segments.json", malicious)
+    collaborators.worker_result = malicious
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+
+    with pytest.raises(TranscriptionFailed, match="input validation"):
+        service.resume(job_dir)
+
+    manifest = JobStore().load(job_dir, recover_interrupted=False)
+    assert manifest.artifacts == []
+    assert manifest.steps["probe-input"].status.value == "succeeded"
+    assert manifest.steps["extract-audio"].status.value == "succeeded"
+    assert manifest.steps["transcribe"].status.value == "failed"
+    assert collaborators.artifact_calls == 1
+    assert collaborators.preview_calls == 1
+
+
+def test_resume_repreflights_missing_cached_preview_font_before_rerendering(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    first_font = tmp_path / "Fonts" / "YuGothR.ttc"
+    first_font.parent.mkdir()
+    first_font.touch()
+    collaborators.font = FontChoice("Yu Gothic", first_font)
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source, preview=True))
+    first_font.unlink()
+    second_font = tmp_path / "Fonts" / "meiryo.ttc"
+    second_font.touch()
+    collaborators.font = FontChoice("Meiryo", second_font)
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+
+    service.resume(job_dir)
+
+    manifest = JobStore().load(job_dir, recover_interrupted=False)
+    assert manifest.tools["preview-font"] == "Meiryo"
+    assert collaborators.probe_calls == 2
+    assert collaborators.extract_calls == 2
+    assert collaborators.worker_calls == 2
+    assert collaborators.artifact_calls == 2
+    assert collaborators.preview_calls == 2
+    assert collaborators.preview_fonts[-1] == FontChoice("Meiryo", second_font)
 
 
 def test_step_transitions_record_timestamps_and_failure_exit_metadata(tmp_path: Path):

@@ -118,6 +118,7 @@ def render_preview(
     destination: str | Path,
     media_info: MediaInfo,
     *,
+    font: FontChoice | None = None,
     runner: Runner = run_cancellable_process,
     cancel_event: object | None = None,
 ) -> Path:
@@ -125,14 +126,22 @@ def render_preview(
         raise ValueError("preview requires a video stream")
     if not media_info.has_audio:
         raise ValueError("preview requires an audio stream")
-    font = resolve_japanese_font()
+    selected_font = font if font is not None else resolve_japanese_font()
+    if (
+        not isinstance(selected_font, FontChoice)
+        or not isinstance(selected_font.family, str)
+        or not selected_font.family.strip()
+        or not isinstance(selected_font.file, Path)
+        or not selected_font.file.is_file()
+    ):
+        raise ValueError("preview font is invalid")
     output = Path(destination)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = _temporary_sibling(output, ".mp4")
     filter_value = (
         f"subtitles=filename='{_escape_filter_path(Path(subtitles))}':"
-        f"fontsdir='{_escape_filter_path(font.file.parent)}':"
-        f"force_style=FontName={font.family}"
+        f"fontsdir='{_escape_filter_path(selected_font.file.parent)}':"
+        f"force_style=FontName={selected_font.family}"
     )
     args = [
         "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source),

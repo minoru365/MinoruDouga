@@ -33,11 +33,13 @@ from minoru_studio.transcribe.contracts import (
     save_worker_request,
 )
 from minoru_studio.transcribe.media import (
+    FontChoice,
     MediaInfo,
     extract_audio,
     probe_media,
     read_media_tool_versions,
     render_preview,
+    resolve_japanese_font,
 )
 from minoru_studio.transcribe.models import (
     default_model_cache_dir,
@@ -61,6 +63,12 @@ _ARTIFACTS = {
 }
 _PREVIEW_ARTIFACT = "preview-mp4"
 _PREVIEW_FONT = "windows-japanese-auto"
+_PREVIEW_FONT_STATE = "preview-font.json"
+_PREVIEW_FONT_FILES = {
+    "Yu Gothic": "yugothr.ttc",
+    "Meiryo": "meiryo.ttc",
+    "MS Gothic": "msgothic.ttc",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +146,7 @@ class TranscribeService:
         worker: Callable[..., ProcessResult] = run_cancellable_process,
         artifacts: Callable[[Path, WorkerResult], tuple[Path, Path, Path]] = write_artifacts,
         preview_renderer: Callable[..., Path] = render_preview,
+        font_resolver: Callable[[], FontChoice] = resolve_japanese_font,
         tool_versions: Callable[[], object] = read_media_tool_versions,
         model_cache_dir: Path | None = None,
         model_complete: Callable[[Path, str], bool] = model_is_complete,
@@ -150,6 +159,7 @@ class TranscribeService:
         self._worker = worker
         self._artifacts = artifacts
         self._preview_renderer = preview_renderer
+        self._font_resolver = font_resolver
         self._tool_versions = tool_versions
         self._model_cache_dir = Path(model_cache_dir) if model_cache_dir is not None else default_model_cache_dir()
         self._model_complete = model_complete
@@ -314,6 +324,8 @@ class TranscribeService:
                 if isinstance(exc, _LoggerSetupFailure)
                 else "model unavailable"
                 if isinstance(exc, _ModelUnavailable)
+                else "input validation"
+                if isinstance(exc, _InputInvalid)
                 else category
             )
             self._mark_failed(job_dir, current_step, failure_category, exc, exit_code)
@@ -394,6 +406,19 @@ class TranscribeService:
     def _run_probe(self, job_dir: Path, request: TranscribeRequest, context: dict[str, Any]) -> int:
         media_info = self._probe(request.input_path)
         self._validate_media_info(media_info, request.preview)
+        if request.preview:
+            try:
+                font = self._font_resolver()
+            except (OSError, ValueError, TypeError) as exc:
+                raise _InputInvalid("preview font preflight did not validate") from exc
+            if not self._font_choice_is_valid(font):
+                raise _InputInvalid("preview font preflight did not validate")
+            font = FontChoice(font.family, font.file.resolve(strict=True))
+            self._write_json(
+                job_dir / "work" / _PREVIEW_FONT_STATE,
+                {"family": font.family, "file": str(font.file)},
+            )
+            context["preview_font"] = font
         path = job_dir / "work" / "media-info.json"
         self._write_json(path, {
             "duration_ms": media_info.duration_ms,
@@ -412,6 +437,8 @@ class TranscribeService:
             manifest.tools["python"] = ".".join(map(str, sys.version_info[:3]))
             manifest.tools["ffmpeg"] = ffmpeg
             manifest.tools["ffprobe"] = ffprobe
+            if request.preview:
+                manifest.tools["preview-font"] = self._require_preview_font(context).family
 
         self._store.update(job_dir, record_tools)
         return 0
@@ -517,6 +544,7 @@ class TranscribeService:
             job_dir / "outputs" / _ARTIFACTS["subtitles-srt"],
             destination,
             media_info,
+            font=self._require_preview_font(context),
             cancel_event=cancel_event,
         )
         self._record_artifacts(job_dir, {_PREVIEW_ARTIFACT: destination})
@@ -571,6 +599,8 @@ class TranscribeService:
             media_info = MediaInfo(duration, data["has_audio"], data["has_video"])
             self._validate_media_info(media_info, preview)
             context["media_info"] = media_info
+            if preview and not self._load_preview_font(job_dir, context):
+                return False
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return False
         return True
@@ -601,8 +631,25 @@ class TranscribeService:
             result = load_worker_result(path)
             if result.model != request.model:
                 return False
+            if not self._worker_result_within_media(result, self._require_media_info(context)):
+                return False
             context["worker_result"] = result
         except (OSError, ValueError):
+            return False
+        return True
+
+    def _load_preview_font(self, job_dir: Path, context: dict[str, Any]) -> bool:
+        path = job_dir / "work" / _PREVIEW_FONT_STATE
+        try:
+            fingerprint_file(path)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if set(data) != {"family", "file"}:
+                return False
+            font = FontChoice(data["family"], Path(data["file"]))
+            if not self._font_choice_is_valid(font):
+                return False
+            context["preview_font"] = font
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return False
         return True
 
@@ -742,6 +789,38 @@ class TranscribeService:
         if not isinstance(value, WorkerResult):
             raise _InputInvalid("worker result is not available")
         return value
+
+    @staticmethod
+    def _require_preview_font(context: dict[str, Any]) -> FontChoice:
+        value = context.get("preview_font")
+        if not TranscribeService._font_choice_is_valid(value):
+            raise _InputInvalid("preview font is not available")
+        return value
+
+    @staticmethod
+    def _font_choice_is_valid(value: object) -> bool:
+        return (
+            isinstance(value, FontChoice)
+            and isinstance(value.family, str)
+            and bool(value.family.strip())
+            and isinstance(value.file, Path)
+            and value.file.is_file()
+            and value.file.name.casefold() == _PREVIEW_FONT_FILES.get(value.family, "")
+        )
+
+    @staticmethod
+    def _worker_result_within_media(result: WorkerResult, media_info: MediaInfo) -> bool:
+        if result.duration_ms > media_info.duration_ms:
+            return False
+        for segment in result.segments:
+            if segment.start_ms > media_info.duration_ms or segment.end_ms > media_info.duration_ms:
+                return False
+            if any(
+                word.start_ms > media_info.duration_ms or word.end_ms > media_info.duration_ms
+                for word in segment.words
+            ):
+                return False
+        return True
 
     @staticmethod
     def _validate_request(request: TranscribeRequest) -> None:
