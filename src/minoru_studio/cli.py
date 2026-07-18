@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Sequence
 
 from minoru_studio import __version__
+from minoru_studio.beat_sync.commands import beat_sync_command, parse_every_n
 from minoru_studio.doctor import render_doctor, run_doctor
 from minoru_studio.job_commands import create_job_command, inspect_job_command
 from minoru_studio.jobs.model import JobMode
@@ -49,6 +50,45 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser = jobs_subparsers.add_parser("inspect", help="print a job manifest")
     inspect_parser.add_argument("job_dir")
     inspect_parser.set_defaults(handler=inspect_job_command)
+
+    beat_sync_parser = subparsers.add_parser(
+        "beat-sync",
+        help="prepare a beat-synced Resolve job",
+    )
+    beat_sync_parser.set_defaults(
+        handler=beat_sync_command,
+        command_parser=beat_sync_parser,
+        beat_sync_action=None,
+    )
+    beat_sync_parser.add_argument("-Music", "--music", dest="music")
+    beat_sync_parser.add_argument("-MediaDir", "--media-dir", dest="media_dir")
+    beat_sync_parser.add_argument(
+        "-EveryN",
+        "--every-n",
+        dest="every_n",
+        type=parse_every_n,
+        default="auto",
+    )
+    beat_sync_parser.add_argument(
+        "-Order",
+        "--order",
+        choices=("asc", "random"),
+        default="asc",
+    )
+    beat_sync_parser.add_argument(
+        "-TimelineName",
+        "--timeline-name",
+        dest="timeline_name",
+    )
+    beat_sync_parser.add_argument("-Name", "--name", dest="name")
+    beat_sync_parser.add_argument("-OutputDir", "--output-dir", dest="output_dir")
+    actions = beat_sync_parser.add_subparsers(dest="beat_sync_action")
+    resume_parser = actions.add_parser("resume", help="resume interrupted preparation")
+    resume_parser.add_argument("job_dir")
+    resume_parser.set_defaults(
+        handler=beat_sync_command,
+        command_parser=beat_sync_parser,
+    )
     return parser
 
 
