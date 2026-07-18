@@ -1,7 +1,7 @@
 # MinoruStudio Phase 3: Local Transcription Design
 
 - Date: 2026-07-19
-- Status: Approved design; written-spec review pending
+- Status: Approved
 - Scope: Local audio extraction, transcription, subtitle artifacts, and optional preview video
 - Platform: Windows
 
