@@ -5,6 +5,7 @@ from minoru_studio.timebase import (
     frame_to_milliseconds,
     milliseconds_to_frame,
     parse_frame_rate,
+    seconds_to_milliseconds,
 )
 
 
@@ -53,3 +54,14 @@ def test_unsupported_frame_rate_is_rejected(value):
 def test_negative_time_is_rejected():
     with pytest.raises(ValueError):
         milliseconds_to_frame(-1, FrameRate(24))
+
+
+def test_seconds_to_milliseconds_uses_decimal_half_up():
+    assert seconds_to_milliseconds(0.5024) == 502
+    assert seconds_to_milliseconds(0.5025) == 503
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.001])
+def test_seconds_to_milliseconds_rejects_non_finite_or_negative_values(value):
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        seconds_to_milliseconds(value)

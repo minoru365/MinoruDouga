@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal
+import math
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,14 @@ def parse_frame_rate(value: str) -> FrameRate:
         return _KNOWN_RATES[value.strip()]
     except KeyError as exc:
         raise ValueError(f"unsupported frame rate: {value}") from exc
+
+
+def seconds_to_milliseconds(value: float) -> int:
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric < 0:
+        raise ValueError("time values must be finite and non-negative")
+    milliseconds = Decimal(str(numeric)) * 1_000
+    return int(milliseconds.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _round_nonnegative(numerator: int, denominator: int) -> int:

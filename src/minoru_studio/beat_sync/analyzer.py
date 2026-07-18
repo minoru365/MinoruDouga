@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from minoru_studio.beat_sync.models import BeatAnalysis
+from minoru_studio.timebase import seconds_to_milliseconds as _seconds_to_milliseconds
 
 
 class AnalysisError(RuntimeError):
@@ -12,11 +12,10 @@ class AnalysisError(RuntimeError):
 
 
 def seconds_to_milliseconds(value: float) -> int:
-    value = float(value)
-    if not math.isfinite(value) or value < 0:
-        raise AnalysisError("time values must be finite and non-negative")
-    milliseconds = Decimal(str(value)) * 1_000
-    return int(milliseconds.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    try:
+        return _seconds_to_milliseconds(value)
+    except ValueError as exc:
+        raise AnalysisError(str(exc)) from exc
 
 
 def normalize_analysis(

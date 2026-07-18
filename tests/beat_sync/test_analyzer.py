@@ -13,6 +13,11 @@ def test_seconds_round_to_integer_milliseconds():
     assert seconds_to_milliseconds(0.5025) == 503
 
 
+def test_seconds_wrapper_converts_timebase_errors_to_analysis_errors():
+    with pytest.raises(AnalysisError, match="finite and non-negative"):
+        seconds_to_milliseconds(float("nan"))
+
+
 def test_normalization_deduplicates_and_keeps_exact_end():
     result = normalize_analysis(
         2.04,
