@@ -248,6 +248,7 @@ def test_resume_revalidates_cached_audio_only_probe_for_preview(tmp_path: Path):
     manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
     assert manifest.status is JobStatus.FAILED
     assert manifest.steps["probe-input"].status.value == "failed"
+    assert manifest.artifacts == []
     assert not any(
         step.status.value == "succeeded"
         for name, step in manifest.steps.items()
