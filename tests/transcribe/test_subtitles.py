@@ -210,6 +210,17 @@ def test_srt_and_vtt_use_required_timestamps_headers_and_indexes():
     )
 
 
+def test_write_artifacts_round_trips_srt_and_vtt_with_a_hundred_hour_timestamp(tmp_path: Path):
+    result = result_with_segment("長時間。", start_ms=360_000_000, end_ms=360_000_100)
+
+    _, srt, vtt = write_artifacts(tmp_path, result)
+
+    assert srt.read_text(encoding="utf-8").startswith("1\n100:00:00,000 --> 100:00:00,100\n")
+    assert vtt.read_text(encoding="utf-8").startswith(
+        "WEBVTT\n\n100:00:00.000 --> 100:00:00.100\n"
+    )
+
+
 def test_artifacts_replace_destinations_atomically_after_validation(tmp_path: Path, monkeypatch):
     result = result_with_segment("完了。")
     transcript = tmp_path / "transcript.txt"
