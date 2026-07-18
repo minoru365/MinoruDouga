@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
@@ -12,9 +13,6 @@ from minoru_studio.transcribe.models import (
     require_model_capacity,
 )
 from minoru_studio.transcribe.service import TranscribeRequest
-
-
-_LANGUAGES = frozenset(("ja", "auto"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,8 +36,7 @@ class TranscribeFormValues:
         output_dir = _required(self.output_dir, "output directory")
         if self.model not in MODEL_SPECS:
             raise ValueError("unsupported model")
-        if self.language not in _LANGUAGES:
-            raise ValueError("unsupported language")
+        language = normalize_language(self.language)
         if any(type(value) is not bool for value in (self.normalize, self.denoise, self.preview)):
             raise ValueError("transcription options must be booleans")
         source = Path(input_path)
@@ -50,7 +47,7 @@ class TranscribeFormValues:
             name=name,
             output_dir=Path(output_dir),
             model=self.model,
-            language=self.language,
+            language=language,
             normalize=self.normalize,
             denoise=self.denoise,
             preview=self.preview,
@@ -99,3 +96,14 @@ def _required(value: str, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must not be blank")
     return value.strip()
+
+
+def normalize_language(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("unsupported language")
+    language = value.strip().casefold()
+    if language == "auto":
+        return language
+    if len(language) in (2, 3) and language.isascii() and language.isalpha():
+        return language
+    raise ValueError("unsupported language")

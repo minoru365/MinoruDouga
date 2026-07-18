@@ -14,7 +14,11 @@ from minoru_studio.beat_sync.settings import (
 )
 from minoru_studio.jobs.model import JobManifest, JobMode
 from minoru_studio.jobs.store import JobStore
-from minoru_studio.transcribe.gui_state import TranscribeFormValues, model_prompt
+from minoru_studio.transcribe.gui_state import (
+    TranscribeFormValues,
+    model_prompt,
+    normalize_language,
+)
 from minoru_studio.transcribe.media import probe_media
 from minoru_studio.transcribe.models import ModelCapacityError
 from minoru_studio.transcribe.service import (
@@ -173,6 +177,16 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     transcribe_denoise_var = tk.BooleanVar(value=bool(saved_transcribe.get("denoise", False)))
     transcribe_preview_var = tk.BooleanVar(value=bool(saved_transcribe.get("preview", False)))
     status_var = tk.StringVar(value="新しいジョブを作成するか、既存ジョブを開いてください。")
+    mode_defaults = {
+        JobMode.BEAT_SYNC.value: {
+            "name": saved.get("name", "video-job"),
+            "output_dir": saved.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+        },
+        JobMode.TRANSCRIBE.value: {
+            "name": saved_transcribe.get("name", "transcribe-job"),
+            "output_dir": saved_transcribe.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+        },
+    }
 
     ttk.Label(frame, text="モード").grid(row=0, column=0, sticky="w")
     mode_box = ttk.Combobox(
@@ -185,12 +199,14 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     mode_box.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
 
     ttk.Label(frame, text="ジョブ名").grid(row=1, column=0, sticky="w")
-    ttk.Entry(frame, textvariable=name_var, width=31).grid(
+    name_entry = ttk.Entry(frame, textvariable=name_var, width=31)
+    name_entry.grid(
         row=1, column=1, columnspan=2, sticky="ew", pady=4
     )
 
     ttk.Label(frame, text="保存先").grid(row=2, column=0, sticky="w")
-    ttk.Entry(frame, textvariable=output_var, width=31).grid(
+    output_entry = ttk.Entry(frame, textvariable=output_var, width=31)
+    output_entry.grid(
         row=2, column=1, sticky="ew", pady=4
     )
 
@@ -199,7 +215,8 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         if selected:
             output_var.set(selected)
 
-    ttk.Button(frame, text="選択", command=choose_output).grid(row=2, column=2, padx=4)
+    output_button = ttk.Button(frame, text="選択", command=choose_output)
+    output_button.grid(row=2, column=2, padx=4)
 
     beat_frame = ttk.LabelFrame(frame, text="音ハメ準備", padding=12)
     beat_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(14, 4))
@@ -325,7 +342,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     transcribe_model_box = ttk.Combobox(transcribe_frame, textvariable=transcribe_model_var, values=("small", "medium"), state="readonly", width=16)
     transcribe_model_box.grid(row=1, column=1, sticky="w", pady=4)
     ttk.Label(transcribe_frame, text="言語").grid(row=2, column=0, sticky="w")
-    transcribe_language_box = ttk.Combobox(transcribe_frame, textvariable=transcribe_language_var, values=("ja", "auto"), state="readonly", width=16)
+    transcribe_language_box = ttk.Combobox(transcribe_frame, textvariable=transcribe_language_var, values=("ja", "auto"), width=16)
     transcribe_language_box.grid(row=2, column=1, sticky="w", pady=4)
     transcribe_normalize_check = ttk.Checkbutton(transcribe_frame, text="音量を正規化", variable=transcribe_normalize_var)
     transcribe_normalize_check.grid(row=3, column=0, sticky="w", pady=4)
@@ -335,6 +352,8 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     transcribe_preview_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
 
     def create_job() -> None:
+        if active_cancel_event is not None:
+            return
         try:
             job_dir = controller.create_job(
                 mode_var.get(), name_var.get(), output_var.get()
@@ -350,10 +369,13 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         )
 
     current_transcribe_job: Path | None = None
+    current_transcribe_model: str | None = None
     active_cancel_event: threading.Event | None = None
 
     def open_job() -> None:
-        nonlocal current_transcribe_job
+        nonlocal current_transcribe_job, current_transcribe_model
+        if active_cancel_event is not None:
+            return
         selected = filedialog.askdirectory(title=".media-job を選択")
         if not selected:
             return
@@ -369,14 +391,19 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             model = manifest.settings.get("model", "small")
             language = manifest.settings.get("language", "ja")
             transcribe_model_var.set(model if model in {"small", "medium"} else "small")
-            transcribe_language_var.set(language if language in {"ja", "auto"} else "ja")
+            try:
+                transcribe_language_var.set(normalize_language(language))
+            except ValueError:
+                transcribe_language_var.set("ja")
             mode_var.set(JobMode.TRANSCRIBE.value)
             if manifest.status.value in {"failed", "interrupted"}:
                 current_transcribe_job = Path(selected)
+                current_transcribe_model = transcribe_model_var.get()
                 transcribe_button.configure(text="文字起こしを再開")
                 transcribe_button.state(["!disabled"])
             elif manifest.status.value == "succeeded":
-                current_transcribe_job = Path(selected)
+                current_transcribe_job = None
+                current_transcribe_model = None
                 transcribe_button.configure(text="完了済みジョブ（確認のみ）")
                 transcribe_button.state(["disabled"])
             update_mode_fields()
@@ -401,6 +428,8 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         )
 
     def prepare_beat_sync_job() -> None:
+        if active_cancel_event is not None:
+            return
         try:
             every_n = "auto" if auto_var.get() else int(every_n_var.get())
             if every_n != "auto" and not 1 <= every_n <= 16:
@@ -454,13 +483,22 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             transcribe_denoise_check,
             transcribe_preview_check,
             transcribe_button,
+            mode_box,
+            name_entry,
+            output_entry,
+            output_button,
+            prepare_button,
+            create_button,
+            open_button,
         ):
             widget.state(state)
         cancel_button.state(["disabled"] if enabled else ["!disabled"])
 
     def finish_transcription_success(job_dir: Path) -> None:
-        nonlocal active_cancel_event
+        nonlocal active_cancel_event, current_transcribe_job, current_transcribe_model
         active_cancel_event = None
+        current_transcribe_job = None
+        current_transcribe_model = None
         set_transcribe_mutable(True)
         transcribe_button.configure(text="文字起こしを開始")
         status_var.set(f"文字起こし完了: {Path(job_dir).resolve()}")
@@ -476,23 +514,31 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     def start_or_resume_transcription() -> None:
         nonlocal active_cancel_event
         try:
-            values = transcribe_values()
-            request = values.to_request()
-            if request.preview:
-                request = values.to_request(media_info=probe_media(request.input_path))
-            save_transcribe_settings(
-                {
-                    "input": str(request.input_path),
-                    "name": request.name,
-                    "output_dir": str(request.output_dir),
-                    "model": request.model,
-                    "language": request.language,
-                    "normalize": request.normalize,
-                    "denoise": request.denoise,
-                    "preview": request.preview,
-                }
-            )
-            prompt = controller.transcription_model_prompt(request.model)
+            selected_job = current_transcribe_job
+            if selected_job is None:
+                values = transcribe_values()
+                request = values.to_request()
+                if request.preview:
+                    request = values.to_request(media_info=probe_media(request.input_path))
+                save_transcribe_settings(
+                    {
+                        "input": str(request.input_path),
+                        "name": request.name,
+                        "output_dir": str(request.output_dir),
+                        "model": request.model,
+                        "language": request.language,
+                        "normalize": request.normalize,
+                        "denoise": request.denoise,
+                        "preview": request.preview,
+                    }
+                )
+                model = request.model
+            else:
+                request = None
+                model = current_transcribe_model
+                if model is None:
+                    raise RuntimeError("文字起こしジョブのモデル情報がありません")
+            prompt = controller.transcription_model_prompt(model)
             if not prompt.cached:
                 if prompt.free_bytes < prompt.required_free_bytes:
                     raise ModelCapacityError("モデルの保存先に十分な空き容量がありません")
@@ -513,7 +559,6 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             return
         active_cancel_event = threading.Event()
         cancel_event = active_cancel_event
-        selected_job = current_transcribe_job
         set_transcribe_mutable(False)
         status_var.set("文字起こしを開始しています…")
 
@@ -523,6 +568,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         def worker() -> None:
             try:
                 if selected_job is None:
+                    assert request is not None
                     job_dir = controller.prepare_transcription(
                         input_path=str(request.input_path), name=request.name,
                         output_dir=str(request.output_dir), model=request.model,
@@ -576,13 +622,26 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         command=prepare_beat_sync_job,
     )
     prepare_button.grid(row=0, column=0, columnspan=2, sticky="ew", padx=(0, 4))
-    ttk.Button(action_frame, text="既存ジョブを開く", command=open_job).grid(
+    open_button = ttk.Button(action_frame, text="既存ジョブを開く", command=open_job)
+    open_button.grid(
         row=0,
         column=2,
         sticky="ew",
     )
 
+    displayed_mode = JobMode.BEAT_SYNC.value
+
     def update_mode_fields(event=None) -> None:
+        nonlocal displayed_mode
+        mode_defaults[displayed_mode] = {
+            "name": name_var.get(),
+            "output_dir": output_var.get(),
+        }
+        selected_mode = mode_var.get()
+        if selected_mode in mode_defaults:
+            name_var.set(mode_defaults[selected_mode]["name"])
+            output_var.set(mode_defaults[selected_mode]["output_dir"])
+        displayed_mode = selected_mode
         if mode_var.get() == JobMode.BEAT_SYNC.value:
             beat_frame.grid()
             transcribe_frame.grid_remove()

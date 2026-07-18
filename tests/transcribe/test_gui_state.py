@@ -30,7 +30,7 @@ def test_form_values_build_a_transcribe_request():
         ("name", " "),
         ("output_dir", " "),
         ("model", "large"),
-        ("language", "en"),
+        ("language", "english"),
     ],
 )
 def test_form_values_reject_invalid_required_fields(field, value):
@@ -51,6 +51,15 @@ def test_preview_rejects_a_probed_audio_only_input():
 
     with pytest.raises(ValueError, match="video"):
         values.to_request(media_info=MediaInfo(1_000, True, False))
+
+
+@pytest.mark.parametrize("language", ["EN", "eng"])
+def test_form_values_accepts_and_normalizes_explicit_ascii_language_codes(language):
+    request = TranscribeFormValues(
+        "input.mp4", "demo", "jobs", "small", language, False, False, False
+    ).to_request()
+
+    assert request.language == language.casefold()
 
 
 def test_model_prompt_contains_capacity_and_no_authorization_state(tmp_path):

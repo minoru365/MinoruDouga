@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 import pytest
 
 from minoru_studio import gui
 from minoru_studio.gui import LauncherController
 from minoru_studio.transcribe.gui_state import ModelPrompt
+from minoru_studio.jobs.model import JobMode, JobStatus
 
 
 def test_controller_creates_and_inspects_pending_job(tmp_path):
@@ -113,3 +116,109 @@ def test_controller_builds_model_prompt_without_authorization_data(monkeypatch):
     monkeypatch.setattr(gui, "model_prompt", lambda model: expected)
 
     assert LauncherController().transcription_model_prompt("small") is expected
+
+
+def test_opened_failed_transcription_resumes_without_validating_or_saving_new_form(monkeypatch, tmp_path):
+    buttons = {}
+    widgets = []
+
+    class Variable:
+        def __init__(self, value=None):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class Widget:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            self.command = kwargs.get("command")
+            self.text = kwargs.get("text")
+            self.states = []
+            if self.text:
+                buttons[self.text] = self
+            widgets.append(self)
+
+        def grid(self, *args, **kwargs):
+            return None
+
+        pack = grid
+        grid_remove = grid
+        columnconfigure = grid
+        bind = grid
+
+        def state(self, values):
+            self.states.extend(values)
+
+        def configure(self, **kwargs):
+            self.text = kwargs.get("text", self.text)
+            if self.text:
+                buttons[self.text] = self
+
+    class Root(Widget):
+        def title(self, *args):
+            return None
+
+        geometry = title
+        resizable = title
+        mainloop = title
+
+        def after(self, delay, callback):
+            callback()
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    failed_job = tmp_path / "failed.media-job"
+    manifest = SimpleNamespace(
+        name="failed",
+        mode=JobMode.TRANSCRIBE,
+        status=JobStatus.FAILED,
+        settings={"model": "medium", "language": "ja"},
+    )
+    calls = []
+
+    class Controller:
+        def inspect_job(self, path):
+            return manifest
+
+        def transcription_model_prompt(self, model):
+            assert model == "medium"
+            return ModelPrompt(True, model, 0, 0, 0, "cache")
+
+        def resume_transcription(self, job_dir, **kwargs):
+            calls.append((job_dir, kwargs))
+            return failed_job
+
+        def prepare_transcription(self, **kwargs):
+            raise AssertionError("resume must not prepare a new request")
+
+    monkeypatch.setattr(gui.tk, "Tk", Root)
+    monkeypatch.setattr(gui.tk, "StringVar", Variable)
+    monkeypatch.setattr(gui.tk, "BooleanVar", Variable)
+    for name in ("Frame", "Label", "Entry", "Button", "Combobox", "LabelFrame", "Spinbox", "Checkbutton", "Radiobutton", "Separator"):
+        monkeypatch.setattr(gui.ttk, name, Widget)
+    monkeypatch.setattr(gui.filedialog, "askdirectory", lambda **kwargs: str(failed_job))
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gui.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(gui, "probe_media", lambda path: pytest.fail("resume must not probe new input"))
+    monkeypatch.setattr(gui, "save_transcribe_settings", lambda values: pytest.fail("resume must not save new form"))
+
+    gui.launch_gui(Controller())
+    buttons["既存ジョブを開く"].command()
+    buttons["文字起こしを再開"].command()
+
+    assert calls[0][0] == failed_job
+    assert "disabled" in buttons["音ハメ準備を開始"].states
+    assert "disabled" in buttons["既存ジョブを開く"].states
+    mode_box = next(widget for widget in widgets if "values" in widget.kwargs and len(widget.kwargs["values"]) == len(JobMode))
+    assert "disabled" in mode_box.states
+    buttons["文字起こしを開始"].command()
+    assert len(calls) == 1
