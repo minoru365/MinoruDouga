@@ -71,9 +71,9 @@ uv run minoru-studio
 入力値は `%APPDATA%\MinoruStudio\config.json` に保存されますが、許可された
 画面項目以外は保存しません。
 
-## 文字起こし（0.3.0受入前）
+## 文字起こし
 
-この機能は実モデル受入前の pre-release です。ローカルの FFmpeg と
+文字起こしはサポート対象のローカル workflow です。ローカルの FFmpeg と
 faster-whisper を使い、入力メディア・ジョブ・生成物を外部サービスへ送信しません。
 初回に model が cache にない場合も、`-AllowModelDownload` を明示しない限り
 download は開始しません。
@@ -112,8 +112,7 @@ uv run minoru-studio transcribe --help
 uv run minoru-studio doctor --json
 ```
 
-実モデルの受入手順と記録欄は [文字起こし受入 runbook](docs/transcribe-acceptance.md) を
-使用してください。この README は受入完了や 0.3.0 の提供開始を宣言するものではありません。
+実モデル受入の内容は [文字起こし受入記録](docs/transcribe-acceptance.md) に記録しています。
 
 ## 基盤コマンド
 

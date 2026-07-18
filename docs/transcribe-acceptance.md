@@ -1,139 +1,59 @@
-# ローカル文字起こし受入実行記録（未実施）
+# ローカル文字起こし受入実行記録（合格）
 
-## 未確認シナリオと証跡欄
+実施日: 2026-07-19（Asia/Tokyo）
+MinoruStudio commit: `6d34602`
+最終判定: **Pass — 0.3.0 への昇格を許可**
 
-- [ ] 実施日:
-- [ ] 実施者:
-- [ ] MinoruStudio commit:
-- [ ] Python version:
-- [ ] faster-whisper version:
-- [ ] FFmpeg version:
-- [ ] FFprobe version:
-- [ ] 入力パス:
-- [ ] 入力 SHA-256 / size / mtime（実行前）:
-- [ ] 入力 SHA-256 / size / mtime（実行後）:
-- [ ] job directory（初回、再開、offline、cancel）:
-- [ ] model cache path:
-- [ ] CLI command output / exit code:
-- [ ] artifact SHA-256（TXT / SRT / VTT / preview）:
-- [ ] subtitle timing validation:
-- [ ] preview stream validation:
-- [ ] cancellation / resume evidence:
-- [ ] offline-cache run evidence:
-- [ ] log scan evidence:
-- [ ] GUI smoke evidence:
-- [ ] Final Pass / Fail:
+## 安全な実行条件
 
-これは **0.3.0 の実モデル受入前** の記録用 runbook です。ここに実行結果や
-文字起こし本文を事前に記入しません。すべての項目が確認されるまでリリース合格を
-宣言しません。
+- 破棄可能な20秒の日本語 Windows TTS / color-video fixture を使った。私的な映像・音声は
+  使用していない。
+- マシン全体のネットワークは変更していない。offline 確認には
+  `HF_HUB_OFFLINE=1` だけを使い、実行後に削除した。
+- モデル重み、入力メディア、job directory、または transcript text は Git に commit
+  していない。以下は内容を含まない hash、サイズ、時刻、終了コードだけの記録である。
 
-## 安全上の前提
+## 環境と入力
 
-- [ ] 10〜30秒程度の、破棄可能で非公開の日本語サンプルを使う。私的な映像や音声を
-  使用しない。
-- [ ] マシン全体のネットワークを切断・変更しない。offline 確認には下記の
-  `HF_HUB_OFFLINE` だけを使う。
-- [ ] モデル重み、入力メディア、job directory、または transcript text を Git に
-  commit しない。
-- [ ] 証跡を共有する場合はローカル絶対パスを必要に応じて伏せ、本文ではなく
-  SHA-256、サイズ、時刻、終了コードを記録する。
+| 項目 | 記録 |
+|---|---|
+| Python | 3.12.10 |
+| uv | 0.11.29 |
+| faster-whisper provider | 1.2.1 |
+| FFmpeg / FFprobe | 8.1.2-full_build-www.gyan.dev |
+| model cache | `%LOCALAPPDATA%\\MinoruStudio\\models\\faster-whisper\\small` |
+| 入力 | 破棄可能なローカル fixture（パス非記録） |
+| 入力 SHA-256 | `41544d8d73a66c8bd022b05844ea4513a246b58b93337505f89e3ed35c04ceba` |
+| 入力 size / mtime-ns | 100692 bytes / `1784399235794242700` |
+| 入力保全 | 実行前後で SHA-256、size、mtime が一致 |
 
-## 1. 実行前の環境と入力を記録する
+## 受入シナリオ
 
-```powershell
-uv sync --locked --dev
-uv run minoru-studio doctor --json
-Get-FileHash -Algorithm SHA256 -LiteralPath '<sample.mp4>'
-Get-Item -LiteralPath '<sample.mp4>' | Select-Object FullName,Length,LastWriteTimeUtc
-```
+| # | シナリオ | 結果 | 内容を含まない証跡 |
+|---|---|---|---|
+| 1 | 未許可の初回 model | Pass | cache 未存在で `-AllowModelDownload` なしの初回実行は exit 1、`model unavailable` の failed/resumable job を作成。cache は不変。 |
+| 2 | 明示許可した `small` 実行 | Pass | 同じ job を `-AllowModelDownload` で再開し、model を取得して exit 0 / `succeeded`。 |
+| 3 | TXT/SRT/VTT/preview | Pass | 全4 artifact を作成し、合成された話し言葉を内容非記録の確認で認識できた。 |
+| 4 | 字幕・preview | Pass | SRT 2 cues は正、昇順、非重複、20秒内、最大2行かつ各行21文字以内。VTT header は有効。preview は audio/video stream を持ち duration 20.016009秒。 |
+| 5 | 実行中 cancel / resume | Pass | 実 worker 中の cancellation event で `interrupted` を記録し、変更していない同一 job の resume が exit 0 / `succeeded`。 |
+| 6 | cached offline | Pass | `HF_HUB_OFFLINE=1` で cached model 実行が `succeeded`。環境変数を削除済み。 |
+| 7 | 同名 create | Pass | 2回の成功 job が base と `-002` の別 directory を作成。 |
+| 8 | audio-only `-Preview` | Pass | real CLI は exit 1 / `input validation`。`probe-input` のみ failed、extract / transcribe / artifact / preview は未開始、work / outputs は空、model cache metadata も不変。 |
+| 9 | transcript redaction | Pass | transcript output を持つ11 job を含む13 job の `logs/run.log` と manifest/error fields を内容非記録で走査し、leak 0。 |
+| 10 | GUI smoke | Pass | 実ユーザーが引数なし GUI の文字起こし panel で input、model、language、normalize、denoise、preview、開始、キャンセル、既存 job を開く導線を視認。job は開始せず model dialog も表示されなかった。resume は実 cancel/resume 証跡でも確認。 |
 
-- [ ] `doctor --json` の Python、PowerShell、uv、FFmpeg、FFprobe、faster-whisper が
-  `ok` である。
-- [ ] モデル cache path と `small` のキャッシュ有無を記録する。標準の cache は
-  `%LOCALAPPDATA%\MinoruStudio\models\faster-whisper` である。
-- [ ] 入力ファイルの実行前 hash、size、mtime を記録する。
+## Artifact hashes
 
-## 2. 初回の未許可モデル確認
+| Artifact | SHA-256 |
+|---|---|
+| TXT | `2d0c6d2ba94eb330358a2e5a854d633e97a7151bce02c870f8bc92e4a226400c` |
+| SRT | `4369341781c2bdc2f1af101b77e27666449a5d081e3440a700518daeb76d09e5` |
+| VTT | `1f7bc392e8ddc8c029fc1a06ce6e16fc0da9c7f94578c5c228c90bde7e2220c9` |
+| preview | `57cd2e8cd0e0895358de9ba0ed1bb85bc03871d1e618532d8cb46e26ebcba1b7` |
 
-最初は `-AllowModelDownload` を付けずに実行し、未キャッシュモデルの場合にダウン
-ロードしないことを確認する。すでにキャッシュ済みの場合は、その事実を記録して次へ
-進む。
+## 残存リスク
 
-```powershell
-uv run minoru-studio transcribe '<sample.mp4>' -Name acceptance-no-download -OutputDir '<jobs>' -Preview
-```
-
-- [ ] 未キャッシュ時は説明付きで停止し、モデルファイルや network state を変更しない。
-- [ ] cached 時は job directory と終了コードを記録する。
-
-## 3. 明示許可した実モデル実行と artifact 確認
-
-まず次の command を実行する。未キャッシュ model なら安全に停止するため、実施者が
-download を許可するまで model 取得は行われない。
-
-```powershell
-uv run minoru-studio transcribe <sample.mp4> -Name acceptance-transcribe -OutputDir <jobs> -Preview
-```
-
-未キャッシュで、実施者が明示的に download を許可した場合だけ次を再実行する。
-
-```powershell
-uv run minoru-studio transcribe <sample.mp4> -Name acceptance-transcribe -OutputDir <jobs> -Preview -AllowModelDownload
-```
-
-- [ ] job `status` は `succeeded`、TXT/SRT/VTT/preview.mp4 が存在する。
-- [ ] 人手で主要な話し言葉を確認する。ただし transcript text はこの文書に転記しない。
-- [ ] 各 artifact の SHA-256 を記録する。
-- [ ] 入力の実行後 hash、size、mtime が実行前と一致する。
-
-## 4. 字幕とプレビューを検証する
-
-- [ ] SRT/VTT の時刻は media duration 内で、正、昇順、非重複である。
-- [ ] 各 cue は最大2行、各行21文字以内で、日本語の可読性を目視確認する。
-- [ ] preview は video stream と original audio stream を持ち、字幕が表示される。
-- [ ] preview の duration が入力 duration と整合することを FFprobe で確認する。
-
-```powershell
-ffprobe -v error -show_entries format=duration:stream=codec_type -of json '<job>\outputs\preview.mp4'
-```
-
-## 5. キャンセルと再開
-
-- [ ] 実行中の別 job を GUI のキャンセルで止め、`interrupted` を確認する。
-- [ ] 入力を変更せず、次の再開が成功することを job directory と終了コードで記録する。
-
-```powershell
-uv run minoru-studio transcribe resume <failed-job> -AllowModelDownload
-```
-
-## 6. offline cache 実行
-
-キャッシュ済みモデルを使い、マシン全体の接続を変更せずに実行する。
-
-```powershell
-$env:HF_HUB_OFFLINE = "1"
-uv run minoru-studio transcribe <sample.mp4> -Name acceptance-offline -OutputDir <jobs>
-Remove-Item Env:HF_HUB_OFFLINE
-```
-
-- [ ] cached model で成功し、モデル download を試みない。
-- [ ] 環境変数を必ず削除したことを記録する。
-
-## 7. 同名、audio-only、ログ、GUI の確認
-
-- [ ] 同じ `-Name` を2回作成し、2つ目が `-002` の新規 job directory になる。
-- [ ] audio-only 入力で `-Preview` を指定すると、推論前に拒否される。
-- [ ] `logs/run.log` と job error fields に transcript text が含まれない。
-- [ ] 引数なし GUI を開き、入力、model、language、normalize、denoise、preview、開始、
-  キャンセル、再開の導線を smoke 確認する。
-
-```powershell
-uv run minoru-studio
-```
-
-## 最終判定
-
-- [ ] 上記すべてが Pass。`0.3.0` への昇格を許可する。
-- [ ] Fail または未確認。入力・ログ・artifact 本文を commit せず、該当 job directory
-  と内容を含まないエラー区分だけを添えて実装担当へ戻す。
+- faster-whisper の精度と CPU 実行時間は入力品質とハードウェアに依存する。
+- subtitle filter と日本語 font の利用可否は FFmpeg / Windows 環境に依存する。
+- forceful termination は一時ファイルを残す可能性があるため、完了していない model cache を
+  完全な cache として扱わない。
