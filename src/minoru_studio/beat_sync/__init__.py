@@ -1,0 +1,1 @@
+"""Beat-synchronized media preparation."""
