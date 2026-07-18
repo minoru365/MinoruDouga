@@ -1,3 +1,33 @@
+# MinoruStudio（基盤開発中）
+
+MinoruStudioは、MinoruDougaの音ハメ機能を将来移植し、字幕、読み上げ、
+デモ動画制作を固定モードで扱うWindows向けローカルツールです。
+
+現在の実装段階は共通基盤のみです。メディア処理とResolve連携はまだ
+MinoruStudioへ移植していません。既存MinoruDougaは下記の手順で引き続き利用できます。
+
+## 開発環境
+
+```powershell
+uv sync --dev
+uv run pytest -q
+```
+
+## 基盤コマンド
+
+```powershell
+uv run minoru-studio --version
+uv run minoru-studio doctor --json
+uv run minoru-studio jobs create -Mode beat-sync -Name demo -OutputDir .\jobs
+uv run minoru-studio jobs inspect .\jobs\demo.media-job
+uv run minoru-studio
+```
+
+引数なしではジョブ管理GUIを開きます。Phase 1のジョブは `pending` 状態の
+基盤データだけを作り、動画、音声、Resolveタイムラインを変更しません。
+
+---
+
 # MinoruDouga 🎵🎬
 
 写真・動画・音楽を渡すと、曲のビートに合わせてテンポよくカットした
