@@ -5,8 +5,8 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -35,12 +35,16 @@ _RESERVED_WINDOWS_NAMES = {
 }
 
 
+class JobConflictError(RuntimeError):
+    pass
+
+
 def safe_job_name(value: str) -> str:
     cleaned = _INVALID_WINDOWS_CHARS.sub("_", value.strip()).rstrip(". ")
     cleaned = re.sub(r"\s+", " ", cleaned)
     if not cleaned:
         raise ValueError("job name must not be empty")
-    if cleaned.upper() in _RESERVED_WINDOWS_NAMES:
+    if cleaned.split(".", 1)[0].upper() in _RESERVED_WINDOWS_NAMES:
         cleaned = f"_{cleaned}"
     return cleaned
 
@@ -122,14 +126,35 @@ class JobStore:
     def save(self, job_dir: Path, manifest: JobManifest) -> None:
         job_dir = Path(job_dir).resolve()
         with JobLock(job_dir):
+            target = job_dir / "job.json"
+            if target.exists():
+                latest = self._read_manifest(job_dir)
+                if latest.updated_at != manifest.updated_at:
+                    raise JobConflictError("job manifest has changed on disk")
             self._write_manifest(job_dir, manifest)
+
+    def update(
+        self,
+        job_dir: Path,
+        mutator: Callable[[JobManifest], object],
+    ) -> JobManifest:
+        job_dir = Path(job_dir).resolve()
+        with JobLock(job_dir):
+            manifest = self._read_manifest(job_dir)
+            mutator(manifest)
+            self._write_manifest(job_dir, manifest)
+            return manifest
 
     def _read_manifest(self, job_dir: Path) -> JobManifest:
         data = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
         return manifest_from_dict(data)
 
     def _write_manifest(self, job_dir: Path, manifest: JobManifest) -> None:
-        manifest.updated_at = datetime.now(UTC).isoformat()
+        updated_at = datetime.now(UTC)
+        token = updated_at.isoformat()
+        if token == manifest.updated_at:
+            token = (updated_at + timedelta(microseconds=1)).isoformat()
+        manifest.updated_at = token
         target = job_dir / "job.json"
         temporary = job_dir / f".job-{uuid4()}.tmp"
         payload = json.dumps(

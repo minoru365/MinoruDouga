@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import pytest
 
@@ -10,11 +11,20 @@ from minoru_studio.jobs.model import (
     StepStatus,
     manifest_to_dict,
 )
-from minoru_studio.jobs.store import JobStore, fingerprint_file, safe_job_name
+from minoru_studio.jobs.store import (
+    JobConflictError,
+    JobStore,
+    fingerprint_file,
+    safe_job_name,
+)
 
 
 def test_safe_job_name_blocks_windows_path_syntax():
     assert safe_job_name(" Demo:One/Two. ") == "Demo_One_Two"
+
+
+def test_safe_job_name_blocks_windows_reserved_stem_before_extension():
+    assert safe_job_name("CON.txt") == "_CON.txt"
 
 
 def test_create_uses_incrementing_directory_without_overwrite(tmp_path):
@@ -123,3 +133,50 @@ def test_recovery_rereads_after_acquiring_lock_before_mutating(tmp_path, monkeyp
 
     monkeypatch.setattr(JobLock, "acquire", update_then_acquire)
     assert store.load(job_dir).status is JobStatus.SUCCEEDED
+
+
+def test_save_rejects_stale_manifest_and_update_merges_after_reload(tmp_path):
+    store = JobStore()
+    job_dir = store.create(tmp_path, "demo", JobMode.TRANSCRIBE)
+    first = store.load(job_dir)
+    stale = store.load(job_dir)
+    first.settings["first"] = True
+    store.save(job_dir, first)
+    before_stale_save = (job_dir / "job.json").read_text(encoding="utf-8")
+
+    stale.settings["second"] = True
+    with pytest.raises(JobConflictError):
+        store.save(job_dir, stale)
+    assert (job_dir / "job.json").read_text(encoding="utf-8") == before_stale_save
+
+    merged = store.update(job_dir, lambda manifest: manifest.settings.update(second=True))
+    assert merged.settings == {"first": True, "second": True}
+
+
+def test_update_mutator_error_does_not_write_and_releases_lock(tmp_path):
+    store = JobStore()
+    job_dir = store.create(tmp_path, "demo", JobMode.TRANSCRIBE)
+    before = (job_dir / "job.json").read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="stop"):
+        store.update(job_dir, lambda manifest: (_ for _ in ()).throw(ValueError("stop")))
+
+    assert (job_dir / "job.json").read_text(encoding="utf-8") == before
+    assert not (job_dir / "job.lock").exists()
+
+
+def test_save_changes_updated_at_when_clock_matches_existing_token(tmp_path, monkeypatch):
+    store = JobStore()
+    job_dir = store.create(tmp_path, "demo", JobMode.TRANSCRIBE)
+    manifest = store.load(job_dir)
+    original_token = manifest.updated_at
+
+    class FrozenDateTime:
+        @classmethod
+        def now(cls, timezone):
+            return datetime.fromisoformat(original_token)
+
+    monkeypatch.setattr("minoru_studio.jobs.store.datetime", FrozenDateTime)
+    store.save(job_dir, manifest)
+
+    assert manifest.updated_at != original_token
