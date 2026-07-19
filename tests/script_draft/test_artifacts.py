@@ -169,6 +169,56 @@ def test_render_artifacts_never_overwrites_a_destination_created_during_publish(
     assert destination.read_bytes() == original
 
 
+@pytest.mark.parametrize("filename", ("frame-index.json", "script.md"))
+def test_render_artifacts_rejects_preexisting_bundle_metadata_before_publishing_frames(
+    tmp_path: Path, filename: str,
+):
+    job_dir = tmp_path / "draft.media-job"
+    source = job_dir / "work" / "frame.png"
+    source.parent.mkdir(parents=True)
+    _png(source)
+    existing = job_dir / "outputs" / filename
+    existing.parent.mkdir(parents=True)
+    existing.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="^final artifact already exists$"):
+        render_artifacts(job_dir / "outputs", VideoInfo(1, 1, 1), [
+            (FrameCandidate(0, source, "scene"), ("scene",)),
+        ])
+
+    assert existing.read_text(encoding="utf-8") == "existing"
+    assert not (job_dir / "outputs" / "frames" / "frame-0001.png").exists()
+
+
+def test_render_artifacts_rolls_back_only_its_published_files_after_later_publish_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    job_dir = tmp_path / "draft.media-job"
+    source = job_dir / "work" / "frame.png"
+    source.parent.mkdir(parents=True)
+    _png(source)
+    index_path = job_dir / "outputs" / "frame-index.json"
+    original_link = artifacts.os.link
+    collision = b"racing index"
+
+    def publish_with_index_collision(temporary: Path, final: Path) -> None:
+        if final == index_path:
+            final.write_bytes(collision)
+            raise FileExistsError
+        original_link(temporary, final)
+
+    monkeypatch.setattr(artifacts.os, "link", publish_with_index_collision)
+
+    with pytest.raises(ValueError, match="^final artifact already exists$"):
+        render_artifacts(job_dir / "outputs", VideoInfo(1, 1, 1), [
+            (FrameCandidate(0, source, "scene"), ("scene",)),
+        ])
+
+    assert not (job_dir / "outputs" / "frames" / "frame-0001.png").exists()
+    assert index_path.read_bytes() == collision
+    assert not (job_dir / "outputs" / "script.md").exists()
+
+
 def test_artifacts_valid_rejects_changed_content_malformed_index_and_escaping_paths(tmp_path: Path):
     job_dir = JobStore().create(tmp_path, "draft", mode=JobMode.SCRIPT_DRAFT)
     source = job_dir / "work" / "frame.png"

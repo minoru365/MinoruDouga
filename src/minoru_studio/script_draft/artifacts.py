@@ -68,12 +68,38 @@ def render_artifacts(
             reasons=normalized_reasons,
         ))
 
+    index_path = outputs / "frame-index.json"
+    script_path = outputs / "script.md"
+    destinations = [frames_dir / Path(entry.image_path).name for entry in entries]
+    destinations.extend((index_path, script_path))
+    if any(destination.exists() for destination in destinations):
+        raise ValueError("final artifact already exists")
+
     frames_dir.mkdir(parents=True, exist_ok=True)
-    for entry, (candidate, _) in zip(entries, merged, strict=True):
-        source = _validated_work_source(candidate.source_path, job_root)
-        _copy_new_file(source, frames_dir / Path(entry.image_path).name)
-    _write_json(outputs / "frame-index.json", _index_payload(info, entries))
-    _write_text(outputs / "script.md", _script_text(info, entries))
+    temporary_paths: list[Path] = []
+    published: list[tuple[Path, Path]] = []
+    try:
+        for entry, (candidate, _) in zip(entries, merged, strict=True):
+            source = _validated_work_source(candidate.source_path, job_root)
+            destination = frames_dir / Path(entry.image_path).name
+            temporary = _stage_copy(source, destination)
+            temporary_paths.append(temporary)
+            _publish_create_only(temporary, destination)
+            published.append((temporary, destination))
+        index_temporary = _stage_text(index_path, _json_text(_index_payload(info, entries)))
+        temporary_paths.append(index_temporary)
+        _publish_create_only(index_temporary, index_path)
+        published.append((index_temporary, index_path))
+        script_temporary = _stage_text(script_path, _script_text(info, entries))
+        temporary_paths.append(script_temporary)
+        _publish_create_only(script_temporary, script_path)
+        published.append((script_temporary, script_path))
+    except BaseException:
+        _rollback_published(published)
+        raise
+    finally:
+        for temporary in temporary_paths:
+            temporary.unlink(missing_ok=True)
     return entries
 
 
@@ -105,33 +131,45 @@ def artifacts_valid(job_dir: Path) -> bool:
     return True
 
 
-def _copy_new_file(source: Path, destination: Path) -> None:
+def _stage_copy(source: Path, destination: Path) -> Path:
     temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
     try:
         shutil.copyfile(source, temporary)
-        try:
-            os.link(temporary, destination)
-        except FileExistsError:
-            raise ValueError("final artifact already exists") from None
-    finally:
+        return temporary
+    except BaseException:
         temporary.unlink(missing_ok=True)
+        raise
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+def _json_text(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
-def _write_text(path: Path, content: str) -> None:
+def _stage_text(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
         temporary.write_text(content, encoding="utf-8")
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            raise ValueError("final artifact already exists") from None
-    finally:
+        return temporary
+    except BaseException:
         temporary.unlink(missing_ok=True)
+        raise
+
+
+def _publish_create_only(temporary: Path, destination: Path) -> None:
+    try:
+        os.link(temporary, destination)
+    except FileExistsError:
+        raise ValueError("final artifact already exists") from None
+
+
+def _rollback_published(published: Sequence[tuple[Path, Path]]) -> None:
+    for temporary, destination in reversed(published):
+        try:
+            if temporary.exists() and destination.exists() and os.path.samefile(temporary, destination):
+                destination.unlink()
+        except OSError:
+            continue
 
 
 def _index_payload(info: VideoInfo, entries: Sequence[FrameIndexEntry]) -> dict[str, Any]:
