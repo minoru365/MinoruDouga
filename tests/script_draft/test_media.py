@@ -94,6 +94,25 @@ def test_extract_interval_candidates_uses_five_second_filter_and_reason(tmp_path
     assert candidates == [FrameCandidate(5_000, work / "interval-frames" / "frame-000001.png", "interval")]
 
 
+def test_candidate_extraction_removes_only_stale_sequential_temporary_outputs(tmp_path: Path):
+    work = tmp_path / "work"
+    output = work / "scene-frames"
+    output.mkdir(parents=True)
+    _png(output / "frame-000002.png")
+    preserved = output / "user-note.txt"
+    preserved.write_text("preserve")
+
+    def runner(args, *, cancel_event):
+        assert not (output / "frame-000002.png").exists()
+        _png(output / "frame-000001.png")
+        return _result(stderr="showinfo pts_time:1.0\n")
+
+    candidates = extract_scene_candidates(tmp_path / "input.mp4", work, runner=runner)
+
+    assert candidates == [FrameCandidate(1_000, output / "frame-000001.png", "scene")]
+    assert preserved.read_text() == "preserve"
+
+
 @pytest.mark.parametrize("result, width, expected", [
     (_result(returncode=1), 1280, "FFmpeg frame extraction failed"),
     (_result(stderr="showinfo pts_time:nan\n"), 1280, "invalid frame timestamp"),
