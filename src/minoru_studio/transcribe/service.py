@@ -48,6 +48,7 @@ from minoru_studio.transcribe.models import (
     require_model_capacity,
 )
 from minoru_studio.transcribe.subtitles import write_artifacts
+from minoru_studio.timebase import seconds_to_milliseconds
 
 
 _STEP_NAMES = (
@@ -611,18 +612,26 @@ class TranscribeService:
         return True
 
     def _wave_is_valid(self, path: Path) -> bool:
+        return self._wave_duration_ms(path) is not None
+
+    @staticmethod
+    def _wave_duration_ms(path: Path) -> int | None:
         try:
             fingerprint_file(path)
             with wave.open(str(path), "rb") as input_file:
-                return (
-                    input_file.getcomptype() == "NONE"
-                    and input_file.getnchannels() == 1
-                    and input_file.getframerate() == 16_000
-                    and input_file.getsampwidth() == 2
-                    and input_file.getnframes() > 0
+                if (
+                    input_file.getcomptype() != "NONE"
+                    or input_file.getnchannels() != 1
+                    or input_file.getframerate() != 16_000
+                    or input_file.getsampwidth() != 2
+                    or input_file.getnframes() <= 0
+                ):
+                    return None
+                return seconds_to_milliseconds(
+                    input_file.getnframes() / input_file.getframerate()
                 )
         except (OSError, ValueError, wave.Error):
-            return False
+            return None
 
     def _load_worker_result(
         self,
@@ -636,7 +645,12 @@ class TranscribeService:
             result = load_worker_result(path)
             if result.model != request.model:
                 return False
-            if not self._worker_result_within_media(result, self._require_media_info(context)):
+            wav_duration_ms = self._wave_duration_ms(job_dir / "work" / "inference.wav")
+            if wav_duration_ms is None or not self._worker_result_within_inputs(
+                result,
+                self._require_media_info(context),
+                wav_duration_ms,
+            ):
                 return False
             context["worker_result"] = result
         except (OSError, ValueError):
@@ -829,8 +843,12 @@ class TranscribeService:
         return value
 
     @staticmethod
-    def _worker_result_within_media(result: WorkerResult, media_info: MediaInfo) -> bool:
-        if result.duration_ms > media_info.duration_ms:
+    def _worker_result_within_inputs(
+        result: WorkerResult,
+        media_info: MediaInfo,
+        wav_duration_ms: int,
+    ) -> bool:
+        if result.duration_ms > wav_duration_ms:
             return False
         for segment in result.segments:
             if segment.start_ms > media_info.duration_ms or segment.end_ms > media_info.duration_ms:

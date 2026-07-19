@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-import struct
 import threading
 import wave
 
@@ -29,19 +28,21 @@ from minoru_studio.transcribe.service import (
 )
 
 
-def _write_pcm(path: Path) -> None:
+def _write_pcm(path: Path, *, frames: int = 16_000) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(16_000)
-        output.writeframes(struct.pack("<hhh", -1200, 0, 1200))
+        output.writeframes(b"\x00\x00" * frames)
 
 
 class Collaborators:
     def __init__(self, *, has_audio: bool = True, has_video: bool = True) -> None:
         self.has_audio = has_audio
         self.has_video = has_video
+        self.media_duration_ms = 1_000
+        self.wav_frames = 16_000
         self.probe_calls = 0
         self.extract_calls = 0
         self.worker_calls = 0
@@ -57,7 +58,7 @@ class Collaborators:
 
     def probe(self, source: Path) -> MediaInfo:
         self.probe_calls += 1
-        return MediaInfo(1_000, self.has_audio, self.has_video)
+        return MediaInfo(self.media_duration_ms, self.has_audio, self.has_video)
 
     def extract(
         self,
@@ -69,7 +70,7 @@ class Collaborators:
         cancel_event: object | None,
     ) -> Path:
         self.extract_calls += 1
-        _write_pcm(destination)
+        _write_pcm(destination, frames=self.wav_frames)
         return destination
 
     def worker(self, args: list[str], *, cancel_event: object | None) -> ProcessResult:
@@ -397,20 +398,22 @@ def test_preview_missing_font_fails_during_probe_before_downstream_work(tmp_path
     assert collaborators.preview_calls == 0
 
 
-def test_worker_result_beyond_probed_duration_is_input_validation_before_artifacts(tmp_path: Path):
+def test_worker_duration_beyond_inference_wav_is_input_validation_before_artifacts(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
     collaborators = Collaborators()
+    collaborators.media_duration_ms = 30_000
+    collaborators.wav_frames = 320_250
     collaborators.worker_result = WorkerResult(
         schema_version=1,
         model="small",
         provider_version="1.2.1",
         language="ja",
         language_probability=1.0,
-        duration_ms=2_000,
-        duration_after_vad_ms=2_000,
-        no_speech=False,
-        segments=(SegmentResult(1_100, 2_000, "安全な確認", (WordResult(1_100, 2_000, "確認"),)),),
+        duration_ms=20_017,
+        duration_after_vad_ms=20_017,
+        no_speech=True,
+        segments=(),
     )
 
     with pytest.raises(TranscriptionFailed, match="input validation") as raised:
@@ -423,27 +426,103 @@ def test_worker_result_beyond_probed_duration_is_input_validation_before_artifac
     assert collaborators.preview_calls == 0
 
 
-def test_resume_resets_cached_worker_result_beyond_probed_duration_and_downstream_artifacts(tmp_path: Path):
+def test_decoded_wav_padding_allows_longer_worker_duration_when_cues_fit_source(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
     collaborators = Collaborators()
+    collaborators.media_duration_ms = 20_000
+    collaborators.wav_frames = 320_250
+    collaborators.worker_result = WorkerResult(
+        schema_version=1,
+        model="small",
+        provider_version="1.2.1",
+        language="ja",
+        language_probability=1.0,
+        duration_ms=20_016,
+        duration_after_vad_ms=6_340,
+        no_speech=False,
+        segments=(SegmentResult(100, 6_340, "確認", (WordResult(100, 6_340, "確認"),)),),
+    )
+
+    job_dir = _service(tmp_path, collaborators).create_and_run(_request(tmp_path, source))
+
+    assert JobStore().load(job_dir, recover_interrupted=False).status is JobStatus.SUCCEEDED
+    assert collaborators.artifact_calls == 1
+
+
+def test_cue_endpoint_beyond_source_is_rejected_even_when_within_inference_wav(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    collaborators.media_duration_ms = 20_000
+    collaborators.wav_frames = 320_250
+    collaborators.worker_result = WorkerResult(
+        schema_version=1,
+        model="small",
+        provider_version="1.2.1",
+        language="ja",
+        language_probability=1.0,
+        duration_ms=20_016,
+        duration_after_vad_ms=20_001,
+        no_speech=False,
+        segments=(SegmentResult(19_900, 20_001, "確認", (WordResult(19_900, 20_001, "確認"),)),),
+    )
+
+    with pytest.raises(TranscriptionFailed, match="input validation"):
+        _service(tmp_path, collaborators).create_and_run(_request(tmp_path, source))
+
+    assert collaborators.artifact_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("media_duration_ms", "malicious"),
+    [
+        (
+            30_000,
+            WorkerResult(
+                schema_version=1,
+                model="small",
+                provider_version="1.2.1",
+                language="ja",
+                language_probability=1.0,
+                duration_ms=20_017,
+                duration_after_vad_ms=20_017,
+                no_speech=True,
+                segments=(),
+            ),
+        ),
+        (
+            20_000,
+            WorkerResult(
+                schema_version=1,
+                model="small",
+                provider_version="1.2.1",
+                language="ja",
+                language_probability=1.0,
+                duration_ms=20_016,
+                duration_after_vad_ms=20_001,
+                no_speech=False,
+                segments=(SegmentResult(19_900, 20_001, "確認", ()),),
+            ),
+        ),
+    ],
+)
+def test_resume_resets_cached_worker_duration_or_cue_violation_and_downstream_artifacts(
+    tmp_path: Path,
+    media_duration_ms: int,
+    malicious: WorkerResult,
+):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    collaborators.media_duration_ms = media_duration_ms
+    collaborators.wav_frames = 320_250
     font_file = tmp_path / "Fonts" / "YuGothR.ttc"
     font_file.parent.mkdir()
     font_file.touch()
     collaborators.font = FontChoice("Yu Gothic", font_file)
     service = _service(tmp_path, collaborators)
     job_dir = service.create_and_run(_request(tmp_path, source, preview=True))
-    malicious = WorkerResult(
-        schema_version=1,
-        model="small",
-        provider_version="1.2.1",
-        language="ja",
-        language_probability=1.0,
-        duration_ms=2_000,
-        duration_after_vad_ms=2_000,
-        no_speech=False,
-        segments=(SegmentResult(1_100, 2_000, "確認", ()),),
-    )
     save_worker_result(job_dir / "work" / "raw-segments.json", malicious)
     collaborators.worker_result = malicious
     JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
