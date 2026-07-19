@@ -70,15 +70,16 @@ def test_extract_scene_candidates_pairs_showinfo_times_with_safe_png_outputs(tmp
 
     candidates = extract_scene_candidates(source, work, runner=runner, cancel_event=cancel_event)
 
-    assert candidates == [
-        FrameCandidate(0, work / "scene-frames" / "frame-000001.png", "scene"),
-        FrameCandidate(2_345, work / "scene-frames" / "frame-000002.png", "scene"),
+    assert [(candidate.time_ms, candidate.reason) for candidate in candidates] == [
+        (0, "scene"), (2_345, "scene"),
     ]
-    assert calls == [([
+    assert all(candidate.source_path.parent.parent == work / "scene-frames" for candidate in candidates)
+    assert all(candidate.source_path.parent.name.startswith(".frames-") for candidate in candidates)
+    assert calls[0] == ([
         "ffmpeg", "-nostdin", "-v", "info", "-y", "-i", str(source), "-an",
         "-vf", "select='gt(scene,0.30)',showinfo,scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease",
-        str(work / "scene-frames" / "frame-%06d.png"),
-    ], cancel_event)]
+        str(candidates[0].source_path.parent / "frame-%06d.png"),
+    ], cancel_event)
 
 
 def test_extract_interval_candidates_uses_five_second_filter_and_reason(tmp_path: Path):
@@ -91,26 +92,31 @@ def test_extract_interval_candidates_uses_five_second_filter_and_reason(tmp_path
 
     candidates = extract_interval_candidates(source, work, runner=runner)
 
-    assert candidates == [FrameCandidate(5_000, work / "interval-frames" / "frame-000001.png", "interval")]
+    assert [(candidate.time_ms, candidate.reason) for candidate in candidates] == [(5_000, "interval")]
+    assert candidates[0].source_path.parent.parent == work / "interval-frames"
+    assert candidates[0].source_path.parent.name.startswith(".frames-")
 
 
-def test_candidate_extraction_removes_only_stale_sequential_temporary_outputs(tmp_path: Path):
+def test_candidate_extraction_isolates_outputs_without_mutating_matching_source(tmp_path: Path):
     work = tmp_path / "work"
     output = work / "scene-frames"
     output.mkdir(parents=True)
-    _png(output / "frame-000002.png")
-    preserved = output / "user-note.txt"
-    preserved.write_text("preserve")
+    source = output / "frame-000001.png"
+    _png(source, 1, 1)
+    source_before = source.read_bytes()
 
     def runner(args, *, cancel_event):
-        assert not (output / "frame-000002.png").exists()
-        _png(output / "frame-000001.png")
+        assert source.read_bytes() == source_before
+        temporary_output = Path(args[-1]).parent
+        assert temporary_output.parent == output
+        _png(temporary_output / "frame-000001.png")
         return _result(stderr="showinfo pts_time:1.0\n")
 
-    candidates = extract_scene_candidates(tmp_path / "input.mp4", work, runner=runner)
+    candidates = extract_scene_candidates(source, work, runner=runner)
 
-    assert candidates == [FrameCandidate(1_000, output / "frame-000001.png", "scene")]
-    assert preserved.read_text() == "preserve"
+    assert candidates[0].source_path != source
+    assert candidates[0].source_path.parent.parent == output
+    assert source.read_bytes() == source_before
 
 
 @pytest.mark.parametrize("result, width, expected", [

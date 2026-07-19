@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-import re
 import struct
 from typing import Callable, Literal
+from uuid import uuid4
 
 from minoru_studio.processes import ProcessResult, run_cancellable_process, run_process
 from minoru_studio.script_draft.models import (
@@ -22,7 +22,6 @@ from minoru_studio.timebase import seconds_to_milliseconds
 Runner = Callable[..., ProcessResult]
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _SHOWINFO_PTS_PREFIX = "pts_time:"
-_TEMPORARY_FRAME_NAME = re.compile(r"frame-\d{6}\.png", re.IGNORECASE)
 
 
 def probe_video(path: Path, *, runner: Runner = run_process) -> VideoInfo:
@@ -85,9 +84,9 @@ def _extract_candidates(
     runner: Runner,
     cancel_event: object | None,
 ) -> list[FrameCandidate]:
-    output_dir = work_dir / directory_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _clear_stale_temporary_frames(output_dir)
+    pass_dir = work_dir / directory_name
+    output_dir = pass_dir / f".frames-{uuid4().hex}"
+    output_dir.mkdir(parents=True, exist_ok=False)
     output_pattern = output_dir / "frame-%06d.png"
     filter_value = (
         f"{filter_prefix}scale=w='min({MAX_FRAME_EDGE},iw)':"
@@ -112,14 +111,6 @@ def _extract_candidates(
         _validate_png_frame(resolved_frame)
         candidates.append(FrameCandidate(timestamp, frame, reason))
     return candidates
-
-
-def _clear_stale_temporary_frames(output_dir: Path) -> None:
-    for candidate in output_dir.iterdir():
-        if _TEMPORARY_FRAME_NAME.fullmatch(candidate.name) and (
-            candidate.is_file() or candidate.is_symlink()
-        ):
-            candidate.unlink()
 
 
 def _showinfo_timestamps(output: str) -> list[int]:
