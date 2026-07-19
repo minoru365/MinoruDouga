@@ -1,7 +1,7 @@
 # ローカル文字起こし受入実行記録（合格）
 
 実施日: 2026-07-19（Asia/Tokyo）
-MinoruStudio commit: `6d34602`
+MinoruStudio commit: `5cbc030`
 最終判定: **Pass — 0.3.0 への昇格を許可**
 
 ## 安全な実行条件
@@ -27,6 +27,30 @@ MinoruStudio commit: `6d34602`
 | 入力 SHA-256 | `41544d8d73a66c8bd022b05844ea4513a246b58b93337505f89e3ed35c04ceba` |
 | 入力 size / mtime-ns | 100692 bytes / `1784399235794242700` |
 | 入力保全 | 実行前後で SHA-256、size、mtime が一致 |
+
+## 監査後再検証
+
+実施日: 2026-07-19（Asia/Tokyo）
+受入対象 commit: `5cbc030`（この証跡 document の commit 前）
+
+既存の10シナリオ合格を維持したまま、監査で追加した preview font provenance と
+duration clock の contract を、cached `small` model と Git ignored fixture で再検証した。
+`HF_HUB_OFFLINE=1` を各実行 process に設定し、実行後に削除した。network access、model
+download、host 全体の network 変更は行っていない。
+
+| 項目 | 内容を含まない実測結果 |
+|---|---|
+| video command | `uv run minoru-studio transcribe test/local-acceptance/japanese-disposable-20s.mp4 -Name acceptance-post-timebase -OutputDir test/local-acceptance/jobs -Preview` |
+| video job | `test/local-acceptance/jobs/acceptance-post-timebase.media-job` / exit 0 / `succeeded` |
+| artifacts | TXT/SRT/VTT/preview の4ファイルを作成。SHA-256 は下記 Artifact hashes と一致 |
+| duration clocks | probed media 20000 ms / deterministic inference WAV 20016 ms / worker claim 20016 ms |
+| endpoint bounds | segment、word、SRT/VTT cue の全 endpoint が probed media 20000 ms 以内。SRT/VTT は各2 cues |
+| preview | audio/video stream、duration 20.016009秒。入力の SHA-256、size、mtime は実行前後で一致 |
+| preview font | manifest family `Yu Gothic`（対応 family）。保存した canonical absolute path の size/mtime/SHA は現在の font file と一致。fingerprint prefix `cd24b5617c1e`。host path は非記録 |
+| redaction | job log と manifest/error fields の transcript token leak は0 |
+| audio-only command | `uv run minoru-studio transcribe test/local-acceptance/japanese-disposable-audio.m4a -Name acceptance-post-timebase-audio-preview -OutputDir test/local-acceptance/jobs -Preview` |
+| audio-only job | `test/local-acceptance/jobs/acceptance-post-timebase-audio-preview.media-job` / exit 1 / `input validation`。probe のみ failed、downstream step/file なし、model cache metadata 不変 |
+| automated gates | service/media/timebase/GUI 対象 70 tests Pass。full suite 257 tests Pass |
 
 ## Job directory 証跡
 
