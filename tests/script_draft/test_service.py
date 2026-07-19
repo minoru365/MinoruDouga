@@ -30,6 +30,7 @@ class Collaborators:
         self.interval_calls = 0
         self.render_calls = 0
         self.fail_scene = False
+        self.uppercase_scene_suffix = False
 
     def probe(self, source: Path) -> VideoInfo:
         self.probe_calls += 1
@@ -39,7 +40,8 @@ class Collaborators:
         self.scene_calls += 1
         if self.fail_scene:
             raise ValueError("untrusted ffmpeg stderr")
-        image = work / "scene-frames" / "frame-000001.png"
+        suffix = ".PNG" if self.uppercase_scene_suffix else ".png"
+        image = work / "scene-frames" / f"frame-000001{suffix}"
         _png(image)
         return [FrameCandidate(1_000, image, "scene")]
 
@@ -67,11 +69,17 @@ class Collaborators:
         return []
 
 
-def _service(tmp_path: Path, collaborators: Collaborators) -> ScriptDraftService:
+def _service(
+    tmp_path: Path,
+    collaborators: Collaborators,
+    *,
+    logger_factory=None,
+) -> ScriptDraftService:
     return ScriptDraftService(
         store=JobStore(), probe=collaborators.probe, extract_scene=collaborators.scene,
         extract_interval=collaborators.interval, render=collaborators.render,
         tool_versions=lambda: type("Tools", (), {"ffmpeg": "ffmpeg test", "ffprobe": "ffprobe test"})(),
+        **({"logger_factory": logger_factory} if logger_factory is not None else {}),
     )
 
 
@@ -131,6 +139,24 @@ def test_changed_source_is_rejected_before_process_calls_and_error_is_content_fr
     assert before == (collaborators.probe_calls, collaborators.scene_calls, collaborators.interval_calls)
 
 
+def test_resume_rejects_type_equivalent_tampered_settings_before_process_calls(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source))
+    JobStore().update(job_dir, lambda manifest: (
+        setattr(manifest, "status", JobStatus.FAILED),
+        manifest.settings.__setitem__("interval_ms", 5_000.0),
+    ))
+    before = (collaborators.probe_calls, collaborators.scene_calls, collaborators.interval_calls)
+
+    with pytest.raises(ScriptDraftFailed, match="^input validation$"):
+        service.resume(job_dir)
+
+    assert before == (collaborators.probe_calls, collaborators.scene_calls, collaborators.interval_calls)
+
+
 def test_ffmpeg_failure_is_durable_and_content_free(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
@@ -146,6 +172,20 @@ def test_ffmpeg_failure_is_durable_and_content_free(tmp_path: Path):
     assert "untrusted" not in str(raised.value)
 
 
+def test_uppercase_candidate_suffix_fails_the_extraction_step(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    collaborators.uppercase_scene_suffix = True
+
+    with pytest.raises(ScriptDraftFailed, match="^FFmpeg$") as raised:
+        _service(tmp_path, collaborators).create_and_run(_request(tmp_path, source))
+
+    manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
+    assert manifest.steps["extract-scene-frames"].status is StepStatus.FAILED
+    assert manifest.steps["extract-scene-frames"].error == "FFmpeg"
+
+
 def test_cancelled_step_is_marked_interrupted(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
@@ -158,3 +198,29 @@ def test_cancelled_step_is_marked_interrupted(tmp_path: Path):
     manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
     assert manifest.status is JobStatus.INTERRUPTED
     assert manifest.steps["probe-input"].status is StepStatus.INTERRUPTED
+
+
+def test_logger_setup_failure_is_durable_and_a_later_resume_retries(tmp_path: Path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    fail_setup = [True]
+
+    def logger_factory(job_dir: Path):
+        if fail_setup[0]:
+            raise OSError("untrusted FFmpeg output")
+        import logging
+        return logging.getLogger("test.script-draft.service")
+
+    service = _service(tmp_path, collaborators, logger_factory=logger_factory)
+    with pytest.raises(ScriptDraftFailed, match="^job logging$") as raised:
+        service.create_and_run(_request(tmp_path, source))
+
+    manifest = JobStore().load(raised.value.job_dir, recover_interrupted=False)
+    assert manifest.status is JobStatus.FAILED
+    assert manifest.last_error == "job logging"
+    assert collaborators.probe_calls == 0
+    assert "untrusted" not in str(raised.value)
+
+    fail_setup[0] = False
+    assert service.resume(raised.value.job_dir) == raised.value.job_dir

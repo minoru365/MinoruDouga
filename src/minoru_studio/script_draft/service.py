@@ -75,6 +75,10 @@ class _InputInvalid(ValueError):
     pass
 
 
+class _LoggerSetupFailure(RuntimeError):
+    pass
+
+
 Progress = Callable[[str], object]
 Extractor = Callable[..., list[FrameCandidate]]
 
@@ -164,8 +168,8 @@ class ScriptDraftService:
         try:
             try:
                 logger = self._logger_factory(job_dir)
-            except Exception:
-                logger = _NoOpLogger()
+            except Exception as exc:
+                raise _LoggerSetupFailure from exc
             context, start_at = self._reconcile(job_dir)
             for name in _STEP_NAMES[start_at:]:
                 current_step = name
@@ -190,9 +194,10 @@ class ScriptDraftService:
         except ScriptDraftInterrupted:
             raise
         except Exception as exc:
-            self._mark_failed(job_dir, current_step, category, None)
-            logger.error("step=%s category=%s exception=%s", current_step or "none", category, type(exc).__name__)
-            raise ScriptDraftFailed(job_dir, category) from None
+            failure_category = "job logging" if isinstance(exc, _LoggerSetupFailure) else category
+            self._mark_failed(job_dir, current_step, failure_category, None)
+            logger.error("step=%s category=%s exception=%s", current_step or "none", failure_category, type(exc).__name__)
+            raise ScriptDraftFailed(job_dir, failure_category) from None
 
     def _claim(self, job_dir: Path, expected_settings: dict[str, Any], allowed: set[JobStatus]) -> None:
         def claim(manifest: JobManifest) -> None:
@@ -203,7 +208,7 @@ class ScriptDraftService:
             if manifest.status not in allowed:
                 raise RuntimeError("script draft job cannot be resumed from its current status")
             self._validate_manifest_inputs(manifest)
-            if manifest.settings != expected_settings:
+            if not self._settings_valid(manifest.settings) or manifest.settings != expected_settings:
                 raise _InputInvalid("job settings do not match script draft settings")
             manifest.status = JobStatus.RUNNING
             manifest.last_error = None
@@ -212,6 +217,8 @@ class ScriptDraftService:
 
     def _reconcile(self, job_dir: Path) -> tuple[dict[str, Any], int]:
         manifest = self._store.load(job_dir, recover_interrupted=False)
+        if not self._settings_valid(manifest.settings):
+            raise _InputInvalid("job settings do not match script draft settings")
         context: dict[str, Any] = {}
         validators: dict[str, Callable[[], bool]] = {
             "probe-input": lambda: self._load_video_info(job_dir, context),
@@ -290,7 +297,7 @@ class ScriptDraftService:
         state: list[dict[str, object]] = []
         for candidate in candidates:
             path = Path(candidate.source_path).resolve(strict=True)
-            if not path.is_relative_to(work / f"{kind}-frames"):
+            if path.suffix != f".{FRAME_FORMAT}" or not path.is_relative_to(work / f"{kind}-frames"):
                 raise _InputInvalid("candidate frame is outside its work directory")
             ref = fingerprint_file(path)
             state.append({"time_ms": candidate.time_ms, "path": path.relative_to(work).as_posix(), "sha256": ref.sha256})
@@ -331,7 +338,7 @@ class ScriptDraftService:
                 if relative.is_absolute() or ".." in relative.parts:
                     return False
                 image = (work / relative).resolve(strict=True)
-                if not image.is_relative_to(work / f"{kind}-frames"):
+                if image.suffix != f".{FRAME_FORMAT}" or not image.is_relative_to(work / f"{kind}-frames"):
                     return False
                 if fingerprint_file(image).sha256 != raw["sha256"]:
                     return False
@@ -488,6 +495,22 @@ class ScriptDraftService:
             "max_frame_edge": MAX_FRAME_EDGE,
             "frame_format": FRAME_FORMAT,
         }
+
+    @staticmethod
+    def _settings_valid(settings: object) -> bool:
+        expected = ScriptDraftService._settings()
+        if not isinstance(settings, dict) or set(settings) != set(expected):
+            return False
+        return (
+            type(settings["scene_threshold"]) is float
+            and settings["scene_threshold"] == SCENE_THRESHOLD
+            and all(
+                type(settings[name]) is int and settings[name] == expected[name]
+                for name in ("interval_ms", "merge_tolerance_ms", "max_frame_edge")
+            )
+            and type(settings["frame_format"]) is str
+            and settings["frame_format"] == FRAME_FORMAT
+        )
 
     def _request_from_manifest(self, manifest: JobManifest, job_dir: Path) -> ScriptDraftRequest:
         try:
