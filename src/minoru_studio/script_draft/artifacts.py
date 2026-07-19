@@ -54,11 +54,12 @@ def render_artifacts(
 ) -> list[FrameIndexEntry]:
     outputs = Path(outputs_dir)
     frames_dir = outputs / "frames"
-    _reject_existing_final_outputs(outputs, frames_dir, len(merged))
+    job_root = outputs.resolve().parent
     entries: list[FrameIndexEntry] = []
     for index, (candidate, reasons) in enumerate(merged, start=1):
         destination = frames_dir / f"frame-{index:04d}.{FRAME_FORMAT}"
-        _validate_png_frame(candidate.source_path)
+        source = _validated_work_source(candidate.source_path, job_root)
+        _validate_png_frame(source)
         normalized_reasons = _validated_reasons(reasons)
         entries.append(FrameIndexEntry(
             index=index,
@@ -69,7 +70,8 @@ def render_artifacts(
 
     frames_dir.mkdir(parents=True, exist_ok=True)
     for entry, (candidate, _) in zip(entries, merged, strict=True):
-        _copy_new_file(candidate.source_path, frames_dir / Path(entry.image_path).name)
+        source = _validated_work_source(candidate.source_path, job_root)
+        _copy_new_file(source, frames_dir / Path(entry.image_path).name)
     _write_json(outputs / "frame-index.json", _index_payload(info, entries))
     _write_text(outputs / "script.md", _script_text(info, entries))
     return entries
@@ -103,23 +105,14 @@ def artifacts_valid(job_dir: Path) -> bool:
     return True
 
 
-def _reject_existing_final_outputs(outputs: Path, frames_dir: Path, count: int) -> None:
-    existing = [outputs / "frame-index.json", outputs / "script.md"]
-    existing.extend(
-        frames_dir / f"frame-{index:04d}.{FRAME_FORMAT}"
-        for index in range(1, count + 1)
-    )
-    if any(path.exists() for path in existing):
-        raise ValueError("final artifact already exists")
-
-
 def _copy_new_file(source: Path, destination: Path) -> None:
-    if destination.exists():
-        raise ValueError("final artifact already exists")
     temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
     try:
         shutil.copyfile(source, temporary)
-        os.replace(temporary, destination)
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            raise ValueError("final artifact already exists") from None
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -129,13 +122,14 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _write_text(path: Path, content: str) -> None:
-    if path.exists():
-        raise ValueError("final artifact already exists")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
         temporary.write_text(content, encoding="utf-8")
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise ValueError("final artifact already exists") from None
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -265,6 +259,17 @@ def _resolve_frame_path(frames_dir: Path, image_path: str) -> Path:
     if not candidate.is_relative_to(frames_dir.resolve(strict=True)):
         raise ValueError("invalid frame path")
     return candidate
+
+
+def _validated_work_source(source_path: Path, job_root: Path) -> Path:
+    try:
+        source = Path(source_path).resolve(strict=True)
+    except OSError:
+        raise ValueError("frame source is outside job work directory") from None
+    work_dir = (job_root / "work").resolve()
+    if not source.is_relative_to(work_dir):
+        raise ValueError("frame source is outside job work directory")
+    return source
 
 
 def _validate_png_frame(path: Path) -> None:

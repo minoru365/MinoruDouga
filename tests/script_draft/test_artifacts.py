@@ -11,6 +11,7 @@ from minoru_studio.script_draft.artifacts import (
     merge_candidates,
     render_artifacts,
 )
+import minoru_studio.script_draft.artifacts as artifacts
 from minoru_studio.script_draft.models import FrameCandidate, VideoInfo
 
 
@@ -127,6 +128,45 @@ def test_render_artifacts_rejects_existing_final_outputs_and_invalid_candidate_p
         render_artifacts(outputs, VideoInfo(1, 1, 1), [
             (FrameCandidate(0, source, "scene"), ("scene",)),
         ])
+
+
+def test_render_artifacts_rejects_candidate_pngs_outside_the_job_work_directory(tmp_path: Path):
+    job_dir = tmp_path / "draft.media-job"
+    outputs = job_dir / "outputs"
+    external = tmp_path / "external.png"
+    _png(external)
+
+    with pytest.raises(ValueError, match="^frame source is outside job work directory$"):
+        render_artifacts(outputs, VideoInfo(1, 1, 1), [
+            (FrameCandidate(0, external, "scene"), ("scene",)),
+        ])
+
+    assert not (outputs / "frames" / "frame-0001.png").exists()
+
+
+def test_render_artifacts_never_overwrites_a_destination_created_during_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    job_dir = tmp_path / "draft.media-job"
+    source = job_dir / "work" / "frame.png"
+    source.parent.mkdir(parents=True)
+    _png(source)
+    destination = job_dir / "outputs" / "frames" / "frame-0001.png"
+    destination.parent.mkdir(parents=True)
+    original = b"existing final output"
+
+    def publish_collision(temporary: Path, final: Path) -> None:
+        final.write_bytes(original)
+        raise FileExistsError
+
+    monkeypatch.setattr(artifacts.os, "link", publish_collision)
+
+    with pytest.raises(ValueError, match="^final artifact already exists$"):
+        render_artifacts(job_dir / "outputs", VideoInfo(1, 1, 1), [
+            (FrameCandidate(0, source, "scene"), ("scene",)),
+        ])
+
+    assert destination.read_bytes() == original
 
 
 def test_artifacts_valid_rejects_changed_content_malformed_index_and_escaping_paths(tmp_path: Path):
