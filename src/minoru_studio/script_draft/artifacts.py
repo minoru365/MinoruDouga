@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import struct
+from collections.abc import Sequence
+from pathlib import Path, PurePosixPath
+from typing import Any
+from uuid import uuid4
+
+from minoru_studio.jobs.store import JobStore, fingerprint_artifact
+from minoru_studio.script_draft.models import (
+    FRAME_FORMAT,
+    INTERVAL_MS,
+    MAX_FRAME_EDGE,
+    MERGE_TOLERANCE_MS,
+    SCENE_THRESHOLD,
+    FrameCandidate,
+    FrameIndexEntry,
+    VideoInfo,
+)
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_SCHEMA_VERSION = 1
+_REASON_ORDER = ("scene", "interval")
+
+
+def merge_candidates(
+    candidates: Sequence[FrameCandidate],
+) -> list[tuple[FrameCandidate, tuple[str, ...]]]:
+    merged: list[tuple[FrameCandidate, tuple[str, ...], int]] = []
+    for candidate in sorted(candidates, key=lambda item: (item.time_ms, item.reason)):
+        if not merged or candidate.time_ms - merged[-1][2] > MERGE_TOLERANCE_MS:
+            merged.append((candidate, (candidate.reason,), candidate.time_ms))
+            continue
+        previous, reasons, _ = merged[-1]
+        selected = candidate if candidate.reason == "scene" else previous
+        reason_set = set(reasons)
+        reason_set.add(candidate.reason)
+        merged[-1] = (
+            selected,
+            tuple(reason for reason in _REASON_ORDER if reason in reason_set),
+            candidate.time_ms,
+        )
+    return [(candidate, reasons) for candidate, reasons, _ in merged]
+
+
+def render_artifacts(
+    outputs_dir: Path,
+    info: VideoInfo,
+    merged: Sequence[tuple[FrameCandidate, tuple[str, ...]]],
+) -> list[FrameIndexEntry]:
+    outputs = Path(outputs_dir)
+    frames_dir = outputs / "frames"
+    _reject_existing_final_outputs(outputs, frames_dir, len(merged))
+    entries: list[FrameIndexEntry] = []
+    for index, (candidate, reasons) in enumerate(merged, start=1):
+        destination = frames_dir / f"frame-{index:04d}.{FRAME_FORMAT}"
+        _validate_png_frame(candidate.source_path)
+        normalized_reasons = _validated_reasons(reasons)
+        entries.append(FrameIndexEntry(
+            index=index,
+            time_ms=candidate.time_ms,
+            image_path=f"frames/{destination.name}",
+            reasons=normalized_reasons,
+        ))
+
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for entry, (candidate, _) in zip(entries, merged, strict=True):
+        _copy_new_file(candidate.source_path, frames_dir / Path(entry.image_path).name)
+    _write_json(outputs / "frame-index.json", _index_payload(info, entries))
+    _write_text(outputs / "script.md", _script_text(info, entries))
+    return entries
+
+
+def artifacts_valid(job_dir: Path) -> bool:
+    try:
+        root = Path(job_dir).resolve(strict=True)
+        outputs = root / "outputs"
+        frames_dir = outputs / "frames"
+        index_path = outputs / "frame-index.json"
+        script_path = outputs / "script.md"
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        entries = _validated_index(payload, frames_dir)
+        script = script_path.read_text(encoding="utf-8")
+        expected_paths = [frames_dir / entry.image_path.removeprefix("frames/") for entry in entries]
+        expected_paths.extend((index_path, script_path))
+        if any(entry.image_path not in script for entry in entries):
+            return False
+        manifest = JobStore().load(root, recover_interrupted=False)
+        if len(manifest.artifacts) < len(expected_paths):
+            return False
+        for path in expected_paths:
+            matching = [record for record in manifest.artifacts if record.path == path.relative_to(root).as_posix()]
+            if len(matching) != 1:
+                return False
+            if fingerprint_artifact(root, path, matching[0].kind) != matching[0]:
+                return False
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _reject_existing_final_outputs(outputs: Path, frames_dir: Path, count: int) -> None:
+    existing = [outputs / "frame-index.json", outputs / "script.md"]
+    existing.extend(
+        frames_dir / f"frame-{index:04d}.{FRAME_FORMAT}"
+        for index in range(1, count + 1)
+    )
+    if any(path.exists() for path in existing):
+        raise ValueError("final artifact already exists")
+
+
+def _copy_new_file(source: Path, destination: Path) -> None:
+    if destination.exists():
+        raise ValueError("final artifact already exists")
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+    try:
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
+def _write_text(path: Path, content: str) -> None:
+    if path.exists():
+        raise ValueError("final artifact already exists")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _index_payload(info: VideoInfo, entries: Sequence[FrameIndexEntry]) -> dict[str, Any]:
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "duration_ms": info.duration_ms,
+        "width": info.width,
+        "height": info.height,
+        "settings": {
+            "scene_threshold": SCENE_THRESHOLD,
+            "interval_ms": INTERVAL_MS,
+            "merge_tolerance_ms": MERGE_TOLERANCE_MS,
+            "max_frame_edge": MAX_FRAME_EDGE,
+            "frame_format": FRAME_FORMAT,
+        },
+        "entries": [
+            {
+                "index": entry.index,
+                "time_ms": entry.time_ms,
+                "image_path": entry.image_path,
+                "reasons": list(entry.reasons),
+            }
+            for entry in entries
+        ],
+    }
+
+
+def _script_text(info: VideoInfo, entries: Sequence[FrameIndexEntry]) -> str:
+    parts = [
+        "# Script Draft\n\n",
+        "| Source duration | Resolution |\n",
+        "| --- | --- |\n",
+        f"| {_format_time(info.duration_ms)} | {info.width} × {info.height} |\n\n",
+        "This is a human-editable draft.\n",
+    ]
+    for entry in entries:
+        parts.extend((
+            f"\n## {_format_time(entry.time_ms)} — Frame {entry.index:04d}\n\n",
+            f"![Frame {entry.index:04d}]({entry.image_path})\n\n",
+            "### 画面の説明\n\n",
+            "### 操作\n\n",
+            "### ナレーション\n",
+        ))
+    return "".join(parts)
+
+
+def _format_time(time_ms: int) -> str:
+    milliseconds = time_ms % 1_000
+    seconds = time_ms // 1_000
+    hours, seconds = divmod(seconds, 3_600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _validated_index(payload: object, frames_dir: Path) -> list[FrameIndexEntry]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version", "duration_ms", "width", "height", "settings", "entries",
+    }:
+        raise ValueError("invalid frame index")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != _SCHEMA_VERSION:
+        raise ValueError("invalid frame index")
+    VideoInfo(payload["duration_ms"], payload["width"], payload["height"])
+    if not _settings_valid(payload["settings"]):
+        raise ValueError("invalid frame index")
+    raw_entries = payload["entries"]
+    if not isinstance(raw_entries, list):
+        raise ValueError("invalid frame index")
+    entries: list[FrameIndexEntry] = []
+    previous_time = -1
+    for expected_index, raw in enumerate(raw_entries, start=1):
+        if not isinstance(raw, dict) or set(raw) != {"index", "time_ms", "image_path", "reasons"}:
+            raise ValueError("invalid frame index")
+        reasons = raw["reasons"]
+        if not isinstance(reasons, list):
+            raise ValueError("invalid frame index")
+        normalized_reasons = _validated_reasons(reasons)
+        entry = FrameIndexEntry(raw["index"], raw["time_ms"], raw["image_path"], normalized_reasons)
+        if (
+            entry.index != expected_index
+            or entry.image_path != f"frames/frame-{expected_index:04d}.{FRAME_FORMAT}"
+            or entry.time_ms < previous_time
+            or entry.time_ms > payload["duration_ms"]
+        ):
+            raise ValueError("invalid frame index")
+        image = _resolve_frame_path(frames_dir, entry.image_path)
+        _validate_png_frame(image)
+        entries.append(entry)
+        previous_time = entry.time_ms
+    return entries
+
+
+def _validated_reasons(reasons: Sequence[str]) -> tuple[str, ...]:
+    normalized = tuple(reasons)
+    if normalized not in (("scene",), ("interval",), _REASON_ORDER):
+        raise ValueError("invalid frame reasons")
+    return normalized
+
+
+def _settings_valid(settings: object) -> bool:
+    expected = _index_payload(VideoInfo(1, 1, 1), [])["settings"]
+    return (
+        isinstance(settings, dict)
+        and set(settings) == set(expected)
+        and type(settings["scene_threshold"]) is float
+        and settings["scene_threshold"] == expected["scene_threshold"]
+        and all(
+            type(settings[name]) is int and settings[name] == expected[name]
+            for name in ("interval_ms", "merge_tolerance_ms", "max_frame_edge")
+        )
+        and isinstance(settings["frame_format"], str)
+        and settings["frame_format"] == expected["frame_format"]
+    )
+
+
+def _resolve_frame_path(frames_dir: Path, image_path: str) -> Path:
+    relative = PurePosixPath(image_path)
+    if (
+        relative.is_absolute()
+        or relative.parts[:1] != ("frames",)
+        or len(relative.parts) != 2
+        or relative.suffix.casefold() != f".{FRAME_FORMAT}"
+    ):
+        raise ValueError("invalid frame path")
+    candidate = (frames_dir.parent / Path(*relative.parts)).resolve(strict=True)
+    if not candidate.is_relative_to(frames_dir.resolve(strict=True)):
+        raise ValueError("invalid frame path")
+    return candidate
+
+
+def _validate_png_frame(path: Path) -> None:
+    if path.suffix.casefold() != f".{FRAME_FORMAT}" or not path.is_file():
+        raise ValueError("frame output is not a PNG file")
+    try:
+        with path.open("rb") as raw_file:
+            header = raw_file.read(24)
+        if header[:8] != _PNG_SIGNATURE or header[12:16] != b"IHDR":
+            raise ValueError
+        width, height = struct.unpack(">II", header[16:24])
+    except (OSError, struct.error, ValueError):
+        raise ValueError("frame output is not a PNG file") from None
+    if width == 0 or height == 0 or width > MAX_FRAME_EDGE or height > MAX_FRAME_EDGE:
+        raise ValueError("frame exceeds maximum edge")
