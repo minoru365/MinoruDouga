@@ -604,31 +604,41 @@ class ResolveGateway(object):
                 descriptor,
                 "visual",
             )
-            if material["kind"] == "video" and abs(actual - target) > 1:
-                if not timeline.DeleteClips([timeline_item], False):
-                    raise GatewayError("cannot delete mismatched video clip")
-                corrected = corrected_source_length(
-                    source_frames,
-                    target,
-                    actual,
-                    rate,
-                    selected["source_rate"],
-                )
-                window, unused_rate = self._window_values(windows[input_index])
-                if selected["source_start"] + corrected > window[1]:
-                    corrected = window[1] - selected["source_start"]
-                if corrected <= 0:
-                    raise GatewayError("corrected video window is empty")
-                descriptor["endFrame"] = (
-                    selected["source_start"] + corrected - 1
-                )
-                timeline_item, actual = self._append(
-                    media_pool,
-                    timeline,
-                    descriptor,
-                    "corrected visual",
-                )
-                source_frames = corrected
+            if abs(actual - target) > 1:
+                if material["kind"] == "video":
+                    if not timeline.DeleteClips([timeline_item], False):
+                        raise GatewayError("cannot delete mismatched video clip")
+                    corrected = corrected_source_length(
+                        source_frames,
+                        target,
+                        actual,
+                        rate,
+                        selected["source_rate"],
+                    )
+                    window, unused_rate = self._window_values(windows[input_index])
+                    if selected["source_start"] + corrected > window[1]:
+                        corrected = window[1] - selected["source_start"]
+                    if corrected <= 0:
+                        raise GatewayError("corrected video window is empty")
+                    descriptor["endFrame"] = (
+                        selected["source_start"] + corrected - 1
+                    )
+                    timeline_item, actual = self._append(
+                        media_pool,
+                        timeline,
+                        descriptor,
+                        "corrected visual",
+                    )
+                    source_frames = corrected
+                else:
+                    if not timeline.DeleteClips([timeline_item], False):
+                        raise GatewayError("cannot delete mismatched still clip")
+                    timeline_item, actual = self._append(
+                        media_pool,
+                        timeline,
+                        descriptor,
+                        "corrected visual",
+                    )
                 corrections += 1
             if abs(actual - target) > 1:
                 mismatches.append(

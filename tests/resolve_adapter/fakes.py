@@ -130,9 +130,11 @@ class FakeTimeline:
 
 
 class FakeMediaPool:
-    def __init__(self, project, still_duration=None):
+    def __init__(self, project, still_duration=None, lag_still_duration=False):
         self.project = project
         self.still_duration = still_duration
+        self.lag_still_duration = lag_still_duration
+        self._pending_still_duration = None
         self.root = FakeFolder("root", "Master")
         self.current_folder = self.root
         self.import_calls = []
@@ -236,6 +238,10 @@ class FakeMediaPool:
                     duration = self.still_duration
                 elif is_probe:
                     duration = max(1, requested // 2)
+                elif self.lag_still_duration:
+                    pending = self._pending_still_duration
+                    duration = requested if pending is None else pending
+                    self._pending_still_duration = requested
             self._timeline_item_number += 1
             timeline_item = FakeTimelineItem(
                 "timeline-item-{0}".format(self._timeline_item_number),
@@ -260,14 +266,18 @@ class FakeMediaPool:
 
 
 class FakeProject:
-    def __init__(self, still_duration=None, timeline_rate="30"):
+    def __init__(self, still_duration=None, timeline_rate="30", lag_still_duration=False):
         self.project_id = "project-1"
         self.name = "Demo Project"
         self.timeline_rate = timeline_rate
         self.sentinel_timeline = FakeTimeline("sentinel", "Existing", timeline_rate)
         self.current_timeline = self.sentinel_timeline
         self.timelines = []
-        self.media_pool = FakeMediaPool(self, still_duration=still_duration)
+        self.media_pool = FakeMediaPool(
+            self,
+            still_duration=still_duration,
+            lag_still_duration=lag_still_duration,
+        )
 
     def GetUniqueId(self):
         return self.project_id
@@ -335,10 +345,11 @@ class FakeProjectManager:
 
 
 class FakeResolve:
-    def __init__(self, still_duration=None, timeline_rate="30"):
+    def __init__(self, still_duration=None, timeline_rate="30", lag_still_duration=False):
         self.project = FakeProject(
             still_duration=still_duration,
             timeline_rate=timeline_rate,
+            lag_still_duration=lag_still_duration,
         )
         self.project_manager = FakeProjectManager(self.project)
 
