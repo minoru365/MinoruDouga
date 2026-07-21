@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,7 +44,33 @@ def plan_renumbering(directory: str | Path) -> list[RenamePlanItem]:
     return plan
 
 
-def apply_renumbering(plan: list[RenamePlanItem]) -> None:
+def write_rename_log(plan: list[RenamePlanItem]) -> Path | None:
+    if not plan:
+        return None
+    directory = plan[0].original.parent
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+    log_path = directory / f".renumber-log-{stamp}.json"
+    log_path.write_text(
+        json.dumps(
+            {
+                "renamed_at": datetime.now(UTC).isoformat(),
+                "directory": str(directory),
+                "mapping": [
+                    {"original": item.original.name, "renamed": item.renamed.name}
+                    for item in plan
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return log_path
+
+
+def apply_renumbering(plan: list[RenamePlanItem]) -> Path | None:
+    log_path = write_rename_log(plan)
     staged = []
     try:
         for item in plan:
@@ -55,6 +83,7 @@ def apply_renumbering(plan: list[RenamePlanItem]) -> None:
         raise
     for temporary, item in staged:
         temporary.rename(item.renamed)
+    return log_path
 
 
 def renumber_sequence_command(args) -> int:
@@ -66,11 +95,13 @@ def renumber_sequence_command(args) -> int:
     if not plan:
         print("no yyMMdd_# files need renaming.")
         return 0
+    print(f"folder: {plan[0].original.parent}")
     for item in plan:
         print(f"{item.original.name} -> {item.renamed.name}")
     if not args.apply:
         print(f"\n{len(plan)} file(s) would be renamed. Pass -Apply to actually rename.")
         return 0
-    apply_renumbering(plan)
+    log_path = apply_renumbering(plan)
     print(f"\nrenamed {len(plan)} file(s).")
+    print(f"rename log: {log_path}")
     return 0

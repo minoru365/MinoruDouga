@@ -1,3 +1,5 @@
+import json
+
 from minoru_studio.cli import main
 from minoru_studio.media_sequence import apply_renumbering, plan_renumbering
 
@@ -82,6 +84,29 @@ def test_apply_performs_a_safe_permutation_rename(tmp_path):
     assert not a.exists() and not b.exists() and not c.exists()
 
 
+def test_apply_writes_a_recoverable_rename_log(tmp_path):
+    _touch(tmp_path, "240731_0.png")
+    _touch(tmp_path, "240731_1.jpg")
+
+    plan = plan_renumbering(tmp_path)
+    log_path = apply_renumbering(plan)
+
+    assert log_path is not None
+    assert log_path.parent == tmp_path
+    payload = json.loads(log_path.read_text(encoding="utf-8"))
+    assert payload["directory"] == str(tmp_path)
+    assert {
+        (entry["original"], entry["renamed"]) for entry in payload["mapping"]
+    } == {
+        ("240731_0.png", "240731_01.png"),
+        ("240731_1.jpg", "240731_00.jpg"),
+    }
+
+
+def test_apply_on_empty_plan_writes_no_log(tmp_path):
+    assert apply_renumbering([]) is None
+
+
 def test_reversal_is_not_idempotent_running_twice_undoes_it(tmp_path):
     # The tool has no way to know whether a folder was already fixed; it
     # always reverses whatever ordering it currently finds. Running it a
@@ -105,6 +130,7 @@ def test_cli_dry_run_previews_without_renaming(tmp_path, capsys):
 
     assert main(["renumber-sequence", str(tmp_path)]) == 0
     out = capsys.readouterr().out
+    assert f"folder: {tmp_path}" in out
     assert "240731_0.png -> 240731_01.png" in out
     assert "Pass -Apply" in out
     assert (tmp_path / "240731_0.png").exists()
@@ -117,9 +143,12 @@ def test_cli_apply_actually_renames(tmp_path, capsys):
 
     assert main(["renumber-sequence", str(tmp_path), "-Apply"]) == 0
     out = capsys.readouterr().out
+    assert f"folder: {tmp_path}" in out
     assert "renamed 2 file(s)." in out
+    assert "rename log:" in out
     assert (tmp_path / "240731_00.jpg").exists()
     assert (tmp_path / "240731_01.png").exists()
+    assert list(tmp_path.glob(".renumber-log-*.json"))
 
 
 def test_cli_reports_invalid_folder(tmp_path, capsys):

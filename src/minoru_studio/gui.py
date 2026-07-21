@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from minoru_studio.beat_sync.plan import estimate_material_count
 from minoru_studio.beat_sync.service import BeatSyncRequest, BeatSyncService
+from minoru_studio.media_sequence import apply_renumbering, plan_renumbering
 from minoru_studio.beat_sync.settings import (
     load_settings as load_beat_sync_settings,
 )
@@ -275,6 +276,14 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         column=2,
         padx=4,
     )
+    renumber_button = ttk.Button(
+        beat_frame, text="連番修正", command=lambda: open_renumber_dialog()
+    )
+    renumber_button.grid(
+        row=1,
+        column=3,
+        padx=4,
+    )
 
     ttk.Label(beat_frame, text="カット間隔").grid(row=2, column=0, sticky="w")
     interval_frame = ttk.Frame(beat_frame)
@@ -531,6 +540,64 @@ def launch_gui(controller: LauncherController | None = None) -> None:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def open_renumber_dialog() -> None:
+        if active_cancel_event is not None:
+            return
+        folder = media_var.get().strip()
+        if not folder:
+            messagebox.showerror("連番修正", "素材フォルダを選択してください。", parent=root)
+            return
+        try:
+            plan = plan_renumbering(folder)
+        except Exception as exc:
+            messagebox.showerror("連番修正", str(exc), parent=root)
+            return
+        if not plan:
+            messagebox.showinfo(
+                "連番修正", "修正が必要な yyMMdd_# ファイルはありませんでした。", parent=root
+            )
+            return
+
+        target_folder = plan[0].original.parent
+
+        dialog = tk.Toplevel(root)
+        dialog.title(f"連番修正プレビュー（{len(plan)}件）")
+        dialog.transient(root)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog, text=f"対象フォルダ: {target_folder}", wraplength=520
+        ).pack(fill="x", padx=8, pady=(8, 0))
+
+        preview = tk.Text(dialog, width=56, height=20)
+        preview.pack(fill="both", expand=True, padx=8, pady=8)
+        for item in plan:
+            preview.insert("end", f"{item.original.name} -> {item.renamed.name}\n")
+        preview.configure(state="disabled")
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill="x", padx=8, pady=(0, 8))
+
+        def do_apply() -> None:
+            try:
+                log_path = apply_renumbering(plan)
+            except Exception as exc:
+                messagebox.showerror("連番修正に失敗", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            messagebox.showinfo(
+                "連番修正",
+                f"{len(plan)}件のファイル名を修正しました。\n\n変換前後の対応表:\n{log_path}",
+                parent=root,
+            )
+
+        ttk.Button(
+            button_frame, text=f"{len(plan)}件を修正する", command=do_apply
+        ).pack(side="right")
+        ttk.Button(
+            button_frame, text="キャンセル", command=dialog.destroy
+        ).pack(side="right", padx=(0, 8))
+
     def transcribe_values() -> TranscribeFormValues:
         return TranscribeFormValues(
             input_path=transcribe_input_var.get(),
@@ -560,6 +627,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             output_button,
             prepare_button,
             estimate_button,
+            renumber_button,
             create_button,
             open_button,
         ):
