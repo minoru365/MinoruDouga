@@ -12,6 +12,7 @@ from minoru_studio.beat_sync.commands import (
 from minoru_studio.doctor import render_doctor, run_doctor
 from minoru_studio.job_commands import create_job_command, inspect_job_command
 from minoru_studio.jobs.model import JobMode
+from minoru_studio.media_sequence import renumber_sequence_command
 from minoru_studio.transcribe.commands import (
     _CreateOptionAction,
     parse_language,
@@ -148,6 +149,14 @@ def build_parser() -> argparse.ArgumentParser:
         "-AllowModelDownload", "--allow-model-download",
         dest="allow_model_download", action="store_true",
     )
+
+    renumber_parser = subparsers.add_parser(
+        "renumber-sequence",
+        help="fix yyMMdd_# filenames so filename order matches capture order",
+    )
+    renumber_parser.add_argument("folder")
+    renumber_parser.add_argument("-Apply", "--apply", action="store_true")
+    renumber_parser.set_defaults(handler=renumber_sequence_command)
     return parser
 
 
