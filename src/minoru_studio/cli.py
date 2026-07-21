@@ -4,7 +4,11 @@ import argparse
 from collections.abc import Sequence
 
 from minoru_studio import __version__
-from minoru_studio.beat_sync.commands import beat_sync_command, parse_every_n
+from minoru_studio.beat_sync.commands import (
+    beat_sync_command,
+    beat_sync_estimate_command,
+    parse_every_n,
+)
 from minoru_studio.doctor import render_doctor, run_doctor
 from minoru_studio.job_commands import create_job_command, inspect_job_command
 from minoru_studio.jobs.model import JobMode
@@ -92,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("job_dir")
     resume_parser.set_defaults(
         handler=beat_sync_command,
+        command_parser=beat_sync_parser,
+    )
+    estimate_parser = actions.add_parser(
+        "estimate",
+        help="estimate materials needed for -Music/-EveryN before choosing media",
+    )
+    estimate_parser.set_defaults(
+        handler=beat_sync_estimate_command,
         command_parser=beat_sync_parser,
     )
 

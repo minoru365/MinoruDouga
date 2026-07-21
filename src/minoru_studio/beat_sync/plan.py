@@ -26,6 +26,15 @@ def resolve_every_n(
     return max(1, min(16, rounded))
 
 
+def estimate_material_count(cut_points_ms, every_n):
+    if not isinstance(every_n, int) or isinstance(every_n, bool) or every_n < 1:
+        raise ValueError("every_n must be a positive integer")
+    interval_count = len(cut_points_ms) - 1
+    if interval_count <= 0:
+        raise ValueError("cut_points_ms must contain at least two points")
+    return -(-interval_count // every_n)
+
+
 def build_plan(
     job_id,
     analysis,

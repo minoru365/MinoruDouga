@@ -64,6 +64,29 @@ def test_controller_prepares_beat_sync_with_injected_service(tmp_path):
     assert calls[0].timeline_name == "Demo"
 
 
+def test_controller_estimates_beat_sync_material_count_with_injected_analyzer():
+    from minoru_studio.beat_sync.models import BeatAnalysis
+
+    class Analyzer:
+        def analyze(self, path):
+            assert str(path) == "song.wav"
+            return BeatAnalysis(
+                4_000, 120.0, (500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500),
+                (0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000),
+            )
+
+    class Service:
+        analyzer = Analyzer()
+
+    controller = LauncherController(beat_sync_service=Service())
+    bpm, duration_ms, count = controller.estimate_beat_sync_material_count(
+        music="song.wav", every_n=4
+    )
+    assert bpm == 120.0
+    assert duration_ms == 4_000
+    assert count == 2
+
+
 def test_controller_prepares_transcription_with_injected_service_and_forwards_callbacks(tmp_path):
     calls = []
     events = []

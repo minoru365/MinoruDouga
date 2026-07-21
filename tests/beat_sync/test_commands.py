@@ -1,3 +1,6 @@
+import pytest
+
+from minoru_studio.beat_sync.models import BeatAnalysis
 from minoru_studio.cli import main
 
 
@@ -48,3 +51,44 @@ def test_resume_calls_service(monkeypatch, tmp_path):
     )
     assert main(["beat-sync", "resume", str(tmp_path)]) == 0
     assert calls == [tmp_path.resolve()]
+
+
+def test_estimate_reports_material_count_for_fixed_every_n(
+    monkeypatch, tmp_path, capsys
+):
+    class Analyzer:
+        def analyze(self, path):
+            return BeatAnalysis(
+                4_000, 120.0, (500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500),
+                (0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000),
+            )
+
+    monkeypatch.setattr(
+        "minoru_studio.beat_sync.commands.LibrosaBeatAnalyzer",
+        lambda: Analyzer(),
+    )
+    assert main([
+        "beat-sync",
+        "-Music",
+        str(tmp_path / "song.wav"),
+        "-EveryN",
+        "4",
+        "estimate",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "estimated_material_count=2" in out
+
+
+def test_estimate_rejects_auto_every_n(tmp_path):
+    with pytest.raises(SystemExit):
+        main([
+            "beat-sync",
+            "-Music",
+            str(tmp_path / "song.wav"),
+            "estimate",
+        ])
+
+
+def test_estimate_requires_music(tmp_path):
+    with pytest.raises(SystemExit):
+        main(["beat-sync", "-EveryN", "4", "estimate"])

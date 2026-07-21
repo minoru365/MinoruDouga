@@ -5,6 +5,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from minoru_studio.beat_sync.plan import estimate_material_count
 from minoru_studio.beat_sync.service import BeatSyncRequest, BeatSyncService
 from minoru_studio.beat_sync.settings import (
     load_settings as load_beat_sync_settings,
@@ -80,6 +81,11 @@ class LauncherController:
                 Path(output_dir),
             )
         )
+
+    def estimate_beat_sync_material_count(self, *, music, every_n):
+        analysis = self.beat_sync_service.analyzer.analyze(Path(music))
+        count = estimate_material_count(analysis.cut_points_ms, every_n)
+        return analysis.bpm, analysis.duration_ms, count
 
     def prepare_transcription(
         self,
@@ -170,6 +176,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     )
     order_var = tk.StringVar(value=saved_order)
     timeline_var = tk.StringVar(value=saved.get("timeline_name", "Beat Sync Demo"))
+    estimate_var = tk.StringVar(value="")
     transcribe_input_var = tk.StringVar(value=saved_transcribe.get("input", ""))
     transcribe_model_var = tk.StringVar(value=saved_transcribe.get("model", "small"))
     transcribe_language_var = tk.StringVar(value=saved_transcribe.get("language", "ja"))
@@ -296,9 +303,18 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     ttk.Label(interval_frame, text="拍ごと").pack(side="left")
     update_interval_state()
 
-    ttk.Label(beat_frame, text="並び順").grid(row=3, column=0, sticky="w")
+    ttk.Label(beat_frame, text="想定枚数").grid(row=3, column=0, sticky="w")
+    estimate_frame = ttk.Frame(beat_frame)
+    estimate_frame.grid(row=3, column=1, columnspan=2, sticky="w", pady=4)
+    estimate_button = ttk.Button(
+        estimate_frame, text="想定枚数を確認", command=lambda: estimate_material_count_action()
+    )
+    estimate_button.pack(side="left")
+    ttk.Label(estimate_frame, textvariable=estimate_var).pack(side="left", padx=(12, 0))
+
+    ttk.Label(beat_frame, text="並び順").grid(row=4, column=0, sticky="w")
     order_frame = ttk.Frame(beat_frame)
-    order_frame.grid(row=3, column=1, columnspan=2, sticky="w", pady=4)
+    order_frame.grid(row=4, column=1, columnspan=2, sticky="w", pady=4)
     ttk.Radiobutton(
         order_frame,
         text="ファイル名順",
@@ -312,9 +328,9 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         value="random",
     ).pack(side="left", padx=12)
 
-    ttk.Label(beat_frame, text="タイムライン名").grid(row=4, column=0, sticky="w")
+    ttk.Label(beat_frame, text="タイムライン名").grid(row=5, column=0, sticky="w")
     ttk.Entry(beat_frame, textvariable=timeline_var, width=48).grid(
-        row=4,
+        row=5,
         column=1,
         columnspan=2,
         sticky="ew",
@@ -463,6 +479,58 @@ def launch_gui(controller: LauncherController | None = None) -> None:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def finish_estimate_error(message: str) -> None:
+        estimate_button.state(["!disabled"])
+        estimate_var.set("")
+        messagebox.showerror("想定枚数の算出に失敗", message, parent=root)
+
+    def finish_estimate_success(bpm: float, duration_ms: int, count: int) -> None:
+        estimate_button.state(["!disabled"])
+        seconds = duration_ms / 1000
+        estimate_var.set(
+            f"約{count}枚〜(BPM{bpm:.1f} / {seconds:.1f}秒、目安)"
+        )
+
+    def estimate_material_count_action() -> None:
+        if active_cancel_event is not None:
+            return
+        if auto_var.get():
+            messagebox.showerror(
+                "想定枚数の算出に失敗",
+                "「自動」ではカット間隔が素材数に依存するため算出できません。"
+                "固定の拍数を指定してください。",
+                parent=root,
+            )
+            return
+        music = music_var.get().strip()
+        if not music:
+            messagebox.showerror("想定枚数の算出に失敗", "BGMを選択してください。", parent=root)
+            return
+        try:
+            every_n = int(every_n_var.get())
+            if not 1 <= every_n <= 16:
+                raise ValueError("カット間隔は1〜16を指定してください")
+        except ValueError as exc:
+            messagebox.showerror("想定枚数の算出に失敗", str(exc), parent=root)
+            return
+        estimate_button.state(["disabled"])
+        estimate_var.set("解析中…")
+
+        def worker() -> None:
+            try:
+                bpm, duration_ms, count = controller.estimate_beat_sync_material_count(
+                    music=music, every_n=every_n
+                )
+            except Exception as exc:
+                root.after(0, lambda message=str(exc): finish_estimate_error(message))
+            else:
+                root.after(
+                    0,
+                    lambda: finish_estimate_success(bpm, duration_ms, count),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def transcribe_values() -> TranscribeFormValues:
         return TranscribeFormValues(
             input_path=transcribe_input_var.get(),
@@ -491,6 +559,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             output_entry,
             output_button,
             prepare_button,
+            estimate_button,
             create_button,
             open_button,
         ):
