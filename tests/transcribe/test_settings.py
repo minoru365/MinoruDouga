@@ -34,7 +34,6 @@ def test_transcribe_settings_round_trip_only_allowed_keys(tmp_path):
         "preview": True,
     }
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "beat_sync": {},
         "transcribe": load_settings(path)
     }
 
