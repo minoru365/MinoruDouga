@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hmac
 import os
 import re
-from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,13 +17,13 @@ _EXCLUDED_PREFIXES = ("画面の説明", "操作")
 _TERMINATORS = frozenset("。！？.!?")
 
 
-def parse_script(path: Path) -> Sequence[Utterance]:
+def parse_script(path: Path) -> tuple[Utterance, ...]:
     source = Path(path)
     suffix = source.suffix.lower()
     if suffix not in {".txt", ".md"}:
         raise ValueError("script must have a .txt or .md suffix")
     lines = source.read_text(encoding="utf-8").splitlines()
-    content = lines if suffix == ".txt" else _narration_lines(lines)
+    content = [_normalize_text_lines(lines)] if suffix == ".txt" else _narration_lines(lines)
     utterance_texts = [piece for line in content for piece in _split_line(line)]
     if not utterance_texts:
         raise ValueError("script contains no narration")
@@ -35,6 +35,7 @@ def snapshot_script(source: Path, inputs_dir: Path) -> Path:
     suffix = source_path.suffix.lower()
     if suffix not in {".txt", ".md"}:
         raise ValueError("script must have a .txt or .md suffix")
+    source_path.read_text(encoding="utf-8")
     destination_dir = Path(inputs_dir)
     destination = destination_dir / f"script{suffix}"
     temporary = destination_dir / f".script-{uuid4().hex}.tmp"
@@ -44,9 +45,10 @@ def snapshot_script(source: Path, inputs_dir: Path) -> Path:
                 output_handle.write(block)
             output_handle.flush()
             os.fsync(output_handle.fileno())
+        source_hash = fingerprint_file(source_path).sha256
         staged_hash = fingerprint_file(temporary).sha256
-        if not snapshot_valid(temporary, staged_hash):
-            raise ValueError("staged script failed hash validation")
+        if not hmac.compare_digest(source_hash, staged_hash):
+            raise ValueError("staged script hash does not match source")
         os.link(temporary, destination)
         return destination
     finally:
@@ -55,8 +57,8 @@ def snapshot_script(source: Path, inputs_dir: Path) -> Path:
 
 def snapshot_valid(snapshot: Path, expected_sha256: str) -> bool:
     try:
-        return fingerprint_file(Path(snapshot)).sha256 == expected_sha256
-    except (FileNotFoundError, OSError, ValueError):
+        return hmac.compare_digest(fingerprint_file(Path(snapshot)).sha256, expected_sha256)
+    except (FileNotFoundError, OSError, TypeError, ValueError):
         return False
 
 
@@ -76,6 +78,10 @@ def _narration_lines(lines: list[str]) -> list[str]:
         if active_level is not None:
             selected.append(line)
     return selected
+
+
+def _normalize_text_lines(lines: list[str]) -> str:
+    return "\n".join(line.strip() for line in lines if line.strip())
 
 
 def _split_line(line: str) -> list[str]:

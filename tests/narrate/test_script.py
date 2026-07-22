@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from minoru_studio.narrate import script as script_module
 from minoru_studio.narrate.models import Utterance
 from minoru_studio.narrate.script import parse_script, snapshot_script, snapshot_valid
 
@@ -28,6 +30,12 @@ def test_txt_trims_lines_removes_blanks_and_splits_at_terminators(tmp_path: Path
     )
 
     assert texts(source) == ("最初です。", "次です！", "Last.", "Another?")
+
+
+def test_txt_joins_trimmed_nonblank_lines_before_sentence_segmentation(tmp_path: Path):
+    source = write_script(tmp_path, "script.txt", "  first  \n\n second。  \n")
+
+    assert texts(source) == ("first\nsecond。",)
 
 
 def test_txt_prefers_whitespace_boundary_at_maximum_length(tmp_path: Path):
@@ -103,6 +111,18 @@ def test_snapshot_is_byte_identical_and_does_not_change_source(tmp_path: Path):
     assert source.read_bytes() == source_bytes
 
 
+def test_snapshot_rejects_invalid_utf8_and_publishes_nothing(tmp_path: Path):
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"\xff")
+    inputs = tmp_path / "job" / "inputs"
+    inputs.mkdir(parents=True)
+
+    with pytest.raises(UnicodeDecodeError):
+        snapshot_script(source, inputs)
+
+    assert not list(inputs.iterdir())
+
+
 def test_snapshot_uses_create_only_publish_and_refuses_collision(tmp_path: Path):
     source = write_script(tmp_path, "source.txt", "content")
     inputs = tmp_path / "job" / "inputs"
@@ -117,6 +137,28 @@ def test_snapshot_uses_create_only_publish_and_refuses_collision(tmp_path: Path)
     assert not list(inputs.glob(".script-*.tmp"))
 
 
+def test_snapshot_rejects_a_staged_copy_with_a_different_source_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = write_script(tmp_path, "source.txt", "content")
+    inputs = tmp_path / "job" / "inputs"
+    inputs.mkdir(parents=True)
+    original_fingerprint = script_module.fingerprint_file
+
+    def mismatched_stage(path: Path):
+        fingerprint = original_fingerprint(path)
+        if Path(path).suffix == ".tmp":
+            return SimpleNamespace(sha256="0" * 64)
+        return fingerprint
+
+    monkeypatch.setattr(script_module, "fingerprint_file", mismatched_stage)
+
+    with pytest.raises(ValueError, match="hash"):
+        snapshot_script(source, inputs)
+
+    assert not list(inputs.iterdir())
+
+
 def test_snapshot_valid_uses_sha256_and_rejects_mismatch(tmp_path: Path):
     snapshot = write_script(tmp_path, "script.txt", "content")
     expected = hashlib.sha256(snapshot.read_bytes()).hexdigest()
@@ -124,3 +166,18 @@ def test_snapshot_valid_uses_sha256_and_rejects_mismatch(tmp_path: Path):
     assert snapshot_valid(snapshot, expected) is True
     assert snapshot_valid(snapshot, "0" * 64) is False
     assert snapshot_valid(tmp_path / "missing.txt", expected) is False
+
+
+def test_snapshot_valid_uses_safe_digest_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    snapshot = write_script(tmp_path, "script.txt", "content")
+    expected = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        script_module,
+        "hmac",
+        SimpleNamespace(compare_digest=lambda actual, wanted: False),
+        raising=False,
+    )
+
+    assert snapshot_valid(snapshot, expected) is False
