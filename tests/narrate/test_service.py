@@ -19,10 +19,12 @@ class Fakes:
         self.calls: list[str] = []
         self.engine = "test-engine"
         self.narration_seconds = Decimal("2.3")
+        self.inspected_narration_seconds: Decimal | None = None
         self.cancel_concat = False
         self.private = "private utterance"
         self.font: Path | None = None
         self.synthesis_error: Exception | None = None
+        self.parsed: tuple[Utterance, ...] | None = None
 
     def probe(self, _: Path) -> VideoInfo:
         self.calls.append("probe")
@@ -30,6 +32,8 @@ class Fakes:
 
     def parse(self, _: Path) -> tuple[Utterance, ...]:
         self.calls.append("parse")
+        if self.parsed is not None:
+            return self.parsed
         return (Utterance(1, self.private), Utterance(2, "another private utterance"))
 
     def preflight(self, *, cancel_event=None) -> VoicevoxProvenance:
@@ -51,7 +55,7 @@ class Fakes:
         return WavInfo(Decimal("1"), 24000, 1, 2)
 
     def inspect(self, path: Path) -> WavInfo:
-        duration = self.narration_seconds if path.name == "narration.wav" else (self.narration_seconds - Decimal("0.3")) / 2
+        duration = (self.inspected_narration_seconds or self.narration_seconds) if path.name == "narration.wav" else (self.narration_seconds - Decimal("0.3")) / 2
         if not path.is_file():
             raise ValueError("missing fake wav")
         return WavInfo(duration, 24000, 1, 2)
@@ -249,7 +253,53 @@ def test_resume_reuses_only_matching_staged_wavs_and_engine_change_invalidates_t
     assert fake.calls.count("synthesize") == before + 2
 
 
-@pytest.mark.parametrize("root_name", ["work", "outputs"])
+def test_tampered_provenance_script_hash_invalidates_staged_wav_reuse(tmp_path: Path):
+    fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
+    JobStore().update(job_dir, lambda manifest: (setattr(manifest, "status", JobStatus.FAILED), setattr(manifest.steps["synthesize-utterances"], "status", StepStatus.INTERRUPTED), manifest.steps.pop("concat-audio"), manifest.steps.pop("render-artifacts")))
+    for path in (job_dir / "outputs").rglob("*"):
+        if path.is_file(): path.unlink()
+    provenance = job_dir / "work" / "voicevox-provenance.json"
+    payload = json.loads(provenance.read_text(encoding="utf-8")); payload["script_sha256"] = "0" * 64
+    provenance.write_text(json.dumps(payload), encoding="utf-8")
+    before = fake.calls.count("synthesize")
+
+    service.resume(job_dir)
+
+    assert fake.calls.count("synthesize") == before + 2
+
+
+@pytest.mark.parametrize(
+    ("path", "producing_step"),
+    [("outputs/utterances/utterance-0001.wav", "synthesize-utterances"), ("outputs/narration.wav", "concat-audio")],
+)
+def test_tampered_producing_output_is_rejected_at_its_first_producing_step(tmp_path: Path, path: str, producing_step: str):
+    from minoru_studio.narrate.service import NarrateFailed
+    fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+    (job_dir / path).write_bytes(b"valid-looking but altered")
+
+    with pytest.raises(NarrateFailed, match="^output validation:"):
+        service.resume(job_dir)
+
+    manifest = JobStore().load(job_dir, recover_interrupted=False)
+    assert manifest.steps.get(producing_step) is None
+
+
+@pytest.mark.parametrize(
+    ("mutate", "category"),
+    [
+        (lambda fake: setattr(fake, "parsed", ()), "script parsing"),
+        (lambda fake: setattr(fake, "inspected_narration_seconds", Decimal("2.4")), "artifact rendering"),
+    ],
+)
+def test_active_step_input_validation_uses_the_step_category(tmp_path: Path, mutate, category: str):
+    from minoru_studio.narrate.service import NarrateFailed
+    fake = Fakes(); mutate(fake)
+    with pytest.raises(NarrateFailed, match=rf"^{category}:"):
+        _service(fake).create_and_run(_request(tmp_path))
+
+
+@pytest.mark.parametrize("root_name", ["inputs", "work", "outputs"])
 def test_resume_rejects_root_escaping_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_name: str):
     from minoru_studio.narrate.service import NarrateFailed
     fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
@@ -257,7 +307,7 @@ def test_resume_rejects_root_escaping_alias(tmp_path: Path, monkeypatch: pytest.
     outside = tmp_path / "outside"; outside.mkdir(); original = type(job_dir).resolve
     def redirect(path: Path, *args, **kwargs):
         resolved = original(path, *args, **kwargs)
-        return outside if resolved == job_dir / "work" else resolved
+        return outside if resolved == job_dir / root_name else resolved
     monkeypatch.setattr(type(job_dir), "resolve", redirect)
     with pytest.raises(NarrateFailed, match="^input validation:"):
         service.resume(job_dir)

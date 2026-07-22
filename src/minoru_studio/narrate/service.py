@@ -120,7 +120,7 @@ class NarrateService:
             self._mark_interrupted(job_dir, current); logger.info("job status=interrupted step=%s", current or "none")
             raise NarrateInterrupted(job_dir) from None
         except Exception as exc:
-            failure = "job logging" if isinstance(exc, _LoggingFailure) else "output validation" if isinstance(exc, _OutputInvalid) else "VOICEVOX unavailable" if isinstance(exc, VoicevoxUnavailable) else "VOICEVOX synthesis" if isinstance(exc, VoicevoxSynthesisError) else "input validation" if isinstance(exc, _InputInvalid) else category
+            failure = "job logging" if isinstance(exc, _LoggingFailure) else "output validation" if isinstance(exc, _OutputInvalid) else "VOICEVOX unavailable" if isinstance(exc, VoicevoxUnavailable) else "VOICEVOX synthesis" if isinstance(exc, VoicevoxSynthesisError) else (category if current is not None else "input validation") if isinstance(exc, _InputInvalid) else category
             self._mark_failed(job_dir, current, failure, None); logger.error("step=%s category=%s exception=%s", current or "none", failure, type(exc).__name__)
             raise NarrateFailed(job_dir, failure) from None
 
@@ -142,10 +142,10 @@ class NarrateService:
             if not is_supported_japanese_font(font): raise _InputInvalid()
             ref = fingerprint_file(font.file.resolve(strict=True)); payload["preview_font"] = {"family": font.family, "path": ref.path, "sha256": ref.sha256, "size": ref.size, "mtime_ns": ref.mtime_ns}; context["font"] = font
         self._write_json(job / "work" / "video-info.json", payload)
-        if not self._load_video(job, context, request.preview): raise _InputInvalid()
         versions = self._tool_versions(); ffmpeg, ffprobe = getattr(versions, "ffmpeg", None), getattr(versions, "ffprobe", None)
         if not self._nonblank(ffmpeg) or not self._nonblank(ffprobe): raise _InputInvalid()
-        self._store.update(job, lambda manifest: manifest.tools.update({"ffmpeg": ffmpeg, "ffprobe": ffprobe}))
+        self._store.update(job, lambda manifest: manifest.tools.update({"ffmpeg": ffmpeg, "ffprobe": ffprobe, "narrate-video-info-sha256": fingerprint_file(job / "work" / "video-info.json").sha256}))
+        if not self._load_video(job, context, request.preview): raise _InputInvalid()
 
     def _parse_step(self, job: Path, request: NarrateRequest, context: dict[str, Any]) -> None:
         expected = self._script_ref(job)
@@ -155,23 +155,26 @@ class NarrateService:
         utterances = self._parse(snapshot)
         if not self._valid_utterances(utterances): raise _InputInvalid()
         self._write_json(job / "work" / "utterances.json", {"script_sha256": expected.sha256, "utterances": [asdict(item) for item in utterances]})
+        self._store.update(job, lambda manifest: manifest.tools.__setitem__("narrate-utterances-sha256", fingerprint_file(job / "work" / "utterances.json").sha256))
         context["utterances"] = utterances; context["script_sha256"] = expected.sha256
 
     def _synthesis_step(self, job: Path, context: dict[str, Any], cancel_event: object | None) -> None:
         utterances = self._require_utterances(context); script_hash = context["script_sha256"]
         provenance = self._voicevox.preflight(cancel_event=cancel_event)
         if not isinstance(provenance, VoicevoxProvenance) or provenance.speaker_name != _SPEAKER or provenance.style_name != _STYLE: raise VoicevoxUnavailable()
-        old = self._load_provenance(job); reuse = old == provenance
+        previous = self._provenance_payload(job)
+        reuse = self._provenance_reusable(previous, provenance, script_hash, utterances)
         if not reuse:
             for staged_path in (job / "work" / "utterances").glob("utterance-*.wav"):
                 staged_path.unlink(missing_ok=True)
-        self._write_json(job / "work" / "voicevox-provenance.json", {**asdict(provenance), "script_sha256": script_hash})
         staged: list[Path] = []
         for utterance in utterances:
             self._raise_if_cancelled(cancel_event); path = job / "work" / "utterances" / f"utterance-{utterance.index:04d}.wav"
             if not (reuse and self._valid_wav(path)): self._publish_wav(self._voicevox.synthesize(utterance.text, provenance.speaker_id, cancel_event=cancel_event), path)
             if not self._valid_wav(path): raise VoicevoxSynthesisError()
             staged.append(path)
+        self._write_json(job / "work" / "voicevox-provenance.json", {**asdict(provenance), "script_sha256": script_hash, "utterance_indices": [item.index for item in utterances], "staged_wavs": [{"index": path_index, "sha256": fingerprint_file(path).sha256} for path_index, path in enumerate(staged, 1)]})
+        self._store.update(job, lambda manifest: manifest.tools.__setitem__("narrate-voicevox-provenance-sha256", fingerprint_file(job / "work" / "voicevox-provenance.json").sha256))
         records: list[ArtifactRecord] = []
         for path in staged:
             output = job / "outputs" / "utterances" / path.name; output.parent.mkdir(parents=True, exist_ok=True)
@@ -211,11 +214,14 @@ class NarrateService:
 
     def _reconcile(self, job: Path, request: NarrateRequest) -> tuple[dict[str, Any], int]:
         self._safe_roots(job); context: dict[str, Any] = {}; steps = self._steps(request.preview); manifest = self._store.load(job, recover_interrupted=False)
-        validators = {"probe-input": lambda: self._load_video(job, context, request.preview), "parse-script": lambda: self._load_utterances(job, context), "synthesize-utterances": lambda: self._load_synthesis(job, context), "concat-audio": lambda: self._valid_wav(job / "outputs" / "narration.wav"), "render-artifacts": lambda: self._artifacts_validator(job, include_preview=False), "render-preview": lambda: self._artifacts_validator(job, include_preview=True)}
+        validators = {"probe-input": lambda: self._load_video(job, context, request.preview), "parse-script": lambda: self._load_utterances(job, context), "synthesize-utterances": lambda: self._load_synthesis(job, context), "concat-audio": lambda: self._valid_wav(job / "outputs" / "narration.wav") and self._artifact_valid(job, job / "outputs" / "narration.wav", "narration-wav"), "render-artifacts": lambda: self._artifacts_validator(job, include_preview=False), "render-preview": lambda: self._artifacts_validator(job, include_preview=True)}
         for index, name in enumerate(steps):
             record = manifest.steps.get(name)
             valid = validators[name]()
             if record is None or record.status is not StepStatus.SUCCEEDED or not valid:
+                if record is not None and record.status is StepStatus.SUCCEEDED and self._invalid_producing_output(job, name, context):
+                    self._store.update(job, lambda latest: self._reset_from(latest, steps, index))
+                    raise _OutputInvalid()
                 if record is not None and record.status is StepStatus.SUCCEEDED and name in {"render-artifacts", "render-preview"} and any((job / "outputs").rglob("*")):
                     raise _OutputInvalid()
                 self._store.update(job, lambda latest: self._reset_from(latest, steps, index)); return context, index
@@ -240,6 +246,7 @@ class NarrateService:
 
     def _load_video(self, job: Path, context: dict[str, Any], preview: bool) -> bool:
         try:
+            if not self._state_fingerprint_valid(job, job / "work" / "video-info.json", "narrate-video-info-sha256"): return False
             data = json.loads((job / "work" / "video-info.json").read_text(encoding="utf-8")); keys = {"duration_ms", "width", "height"} | ({"preview_font"} if preview else set())
             if set(data) != keys: return False
             context["video"] = VideoInfo(data["duration_ms"], data["width"], data["height"])
@@ -253,6 +260,7 @@ class NarrateService:
 
     def _load_utterances(self, job: Path, context: dict[str, Any]) -> bool:
         try:
+            if not self._state_fingerprint_valid(job, job / "work" / "utterances.json", "narrate-utterances-sha256"): return False
             data = json.loads((job / "work" / "utterances.json").read_text(encoding="utf-8")); expected = self._script_ref(job).sha256
             if set(data) != {"script_sha256", "utterances"} or data["script_sha256"] != expected or not isinstance(data["utterances"], list): return False
             utterances = tuple(Utterance(**item) for item in data["utterances"])
@@ -262,17 +270,62 @@ class NarrateService:
 
     def _load_synthesis(self, job: Path, context: dict[str, Any]) -> bool:
         try:
-            utterances = self._require_utterances(context); prov = self._load_provenance(job)
-            if prov is None: return False
-            data = json.loads((job / "work" / "voicevox-provenance.json").read_text(encoding="utf-8"))
-            if data.get("script_sha256") != context["script_sha256"]: return False
-            return all(self._valid_wav(path) for path in self._staged_wavs(job, utterances))
+            utterances = self._require_utterances(context); data = self._provenance_payload(job)
+            if data is None or not self._state_fingerprint_valid(job, job / "work" / "voicevox-provenance.json", "narrate-voicevox-provenance-sha256"): return False
+            if not self._provenance_reusable(data, self._load_provenance(job), context["script_sha256"], utterances): return False
+            return all(self._valid_wav(path) and self._artifact_valid(job, job / "outputs" / "utterances" / path.name, "utterance-wav") for path in self._staged_wavs(job, utterances))
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError): return False
 
     def _load_provenance(self, job: Path) -> VoicevoxProvenance | None:
         try:
-            data = json.loads((job / "work" / "voicevox-provenance.json").read_text(encoding="utf-8")); return VoicevoxProvenance(data["engine_version"], data["speaker_name"], data["style_name"], data["speaker_id"])
+            data = self._provenance_payload(job)
+            if data is None: return None
+            return VoicevoxProvenance(data["engine_version"], data["speaker_name"], data["style_name"], data["speaker_id"])
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError): return None
+
+    @staticmethod
+    def _provenance_payload(job: Path) -> dict[str, Any] | None:
+        try:
+            data = json.loads((job / "work" / "voicevox-provenance.json").read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+        except (OSError, TypeError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _provenance_reusable(data: dict[str, Any] | None, provenance: VoicevoxProvenance | None, script_sha256: object, utterances: Sequence[Utterance]) -> bool:
+        if data is None or provenance is None or not isinstance(script_sha256, str): return False
+        expected = {**asdict(provenance), "script_sha256": script_sha256, "utterance_indices": [item.index for item in utterances], "staged_wavs": [{"index": item.index, "sha256": ""} for item in utterances]}
+        if set(data) != set(expected) or any(data[key] != expected[key] for key in ("engine_version", "speaker_name", "style_name", "speaker_id", "script_sha256", "utterance_indices")): return False
+        staged = data["staged_wavs"]
+        if not isinstance(staged, list) or len(staged) != len(utterances): return False
+        return all(isinstance(item, dict) and set(item) == {"index", "sha256"} and item["index"] == utterance.index and isinstance(item["sha256"], str) and len(item["sha256"]) == 64 for item, utterance in zip(staged, utterances, strict=True))
+
+    def _state_fingerprint_valid(self, job: Path, path: Path, key: str) -> bool:
+        try:
+            manifest = self._store.load(job, recover_interrupted=False); expected = manifest.tools.get(key)
+            return isinstance(expected, str) and fingerprint_file(path).sha256 == expected
+        except (OSError, ValueError):
+            return False
+
+    def _artifact_valid(self, job: Path, path: Path, kind: str) -> bool:
+        try:
+            relative = Path(path).resolve(strict=True).relative_to(Path(job).resolve(strict=True)).as_posix()
+            manifest = self._store.load(job, recover_interrupted=False)
+            records = [item for item in manifest.artifacts if item.path == relative and item.kind == kind]
+            return len(records) == 1 and fingerprint_artifact(job, path, kind) == records[0]
+        except (OSError, ValueError):
+            return False
+
+    def _invalid_producing_output(self, job: Path, name: str, context: dict[str, Any]) -> bool:
+        if name == "synthesize-utterances":
+            try:
+                return any(path.exists() and not self._artifact_valid(job, job / "outputs" / "utterances" / path.name, "utterance-wav") for path in self._staged_wavs(job, self._require_utterances(context)))
+            except _InputInvalid:
+                return False
+        if name == "concat-audio":
+            path = job / "outputs" / "narration.wav"
+            return path.exists() and not self._artifact_valid(job, path, "narration-wav")
+        return False
 
     def _record(self, job: Path, records: Sequence[ArtifactRecord]) -> None:
         def record(manifest: JobManifest) -> None:
