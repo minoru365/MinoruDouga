@@ -47,6 +47,7 @@ class NarrateInterrupted(RuntimeError):
 
 
 class _InputInvalid(ValueError): pass
+class _UnsafePath(_InputInvalid): pass
 class _OutputInvalid(ValueError): pass
 class _LoggingFailure(RuntimeError): pass
 class _NoopLogger:
@@ -120,7 +121,7 @@ class NarrateService:
             self._mark_interrupted(job_dir, current); logger.info("job status=interrupted step=%s", current or "none")
             raise NarrateInterrupted(job_dir) from None
         except Exception as exc:
-            failure = "job logging" if isinstance(exc, _LoggingFailure) else "output validation" if isinstance(exc, _OutputInvalid) else "VOICEVOX unavailable" if isinstance(exc, VoicevoxUnavailable) else "VOICEVOX synthesis" if isinstance(exc, VoicevoxSynthesisError) else (category if current is not None else "input validation") if isinstance(exc, _InputInvalid) else category
+            failure = "job logging" if isinstance(exc, _LoggingFailure) else "output validation" if isinstance(exc, _OutputInvalid) else "VOICEVOX unavailable" if isinstance(exc, VoicevoxUnavailable) else "VOICEVOX synthesis" if isinstance(exc, VoicevoxSynthesisError) else "input validation" if isinstance(exc, _UnsafePath) else (category if current is not None else "input validation") if isinstance(exc, _InputInvalid) else category
             self._mark_failed(job_dir, current, failure, None); logger.error("step=%s category=%s exception=%s", current or "none", failure, type(exc).__name__)
             raise NarrateFailed(job_dir, failure) from None
 
@@ -165,7 +166,7 @@ class NarrateService:
         previous = self._provenance_payload(job)
         reuse = self._provenance_reusable(previous, provenance, script_hash, utterances)
         if not reuse:
-            for staged_path in (job / "work" / "utterances").glob("utterance-*.wav"):
+            for staged_path in self._staged_wavs(job, utterances):
                 staged_path.unlink(missing_ok=True)
         staged: list[Path] = []
         for utterance in utterances:
@@ -180,7 +181,7 @@ class NarrateService:
         self._store.update(job, lambda manifest: manifest.tools.__setitem__("narrate-voicevox-provenance-sha256", fingerprint_file(job / "work" / "voicevox-provenance.json").sha256))
         records: list[ArtifactRecord] = []
         for path in staged:
-            output = job / "outputs" / "utterances" / path.name; output.parent.mkdir(parents=True, exist_ok=True)
+            output = job / "outputs" / "utterances" / path.name; self._safe_target(job, output, "outputs"); output.parent.mkdir(parents=True, exist_ok=True)
             try:
                 os.link(path, output)
             except FileExistsError:
@@ -212,7 +213,7 @@ class NarrateService:
         cues = build_timeline(utterances, wavs, silence_ms=300); narration = self._inspect_wav(job / "outputs" / "narration.wav")
         expected = sum((info.duration_seconds for _, info in wavs), Decimal(0)) + Decimal("0.3") * (len(wavs) - 1)
         if abs(self._ms(narration.duration_seconds) - self._ms(expected)) > 1: raise _InputInvalid()
-        staged_dir = job / "work" / f".artifacts-{uuid4().hex}"; staged_dir.mkdir()
+        staged_dir = job / "work" / f".artifacts-{uuid4().hex}"; self._safe_target(job, staged_dir, "work"); staged_dir.mkdir()
         try:
             srt, vtt = self._subtitles(staged_dir, cues)
             if tuple(map(Path, (srt, vtt))) != (staged_dir / "subtitles.srt", staged_dir / "subtitles.vtt"): raise _InputInvalid()
@@ -221,7 +222,7 @@ class NarrateService:
         finally:
             for path in staged_dir.glob("*"): path.unlink(missing_ok=True)
             staged_dir.rmdir()
-        video = self._require_video(context); warning = job / "work" / "duration-warning.json"
+        video = self._require_video(context); warning = job / "work" / "duration-warning.json"; self._safe_target(job, warning, "work")
         if self._ms(narration.duration_seconds) > video.duration_ms: self._write_json(warning, {"source_duration_ms": video.duration_ms, "narration_duration_ms": self._ms(narration.duration_seconds)})
         else: warning.unlink(missing_ok=True)
         self._record(job, [fingerprint_artifact(job, final_srt, "subtitles-srt"), fingerprint_artifact(job, final_vtt, "subtitles-vtt")])
@@ -295,7 +296,8 @@ class NarrateService:
         try:
             utterances = self._require_utterances(context); data = self._provenance_payload(job)
             if data is None or not self._state_fingerprint_valid(job, job / "work" / "voicevox-provenance.json", "narrate-voicevox-provenance-sha256"): return False
-            if not self._provenance_reusable(data, self._load_provenance(job), context["script_sha256"], utterances): return False
+            current = self._voicevox.preflight()
+            if not isinstance(current, VoicevoxProvenance) or not self._provenance_reusable(data, current, context["script_sha256"], utterances): return False
             return all(self._staged_hash_matches(data, utterance.index, path) and self._valid_wav(path) and self._artifact_valid(job, job / "outputs" / "utterances" / path.name, "utterance-wav") for utterance, path in zip(utterances, self._staged_wavs(job, utterances), strict=True))
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError): return False
 
@@ -355,6 +357,7 @@ class NarrateService:
         return self._artifacts_validator(job, include_preview=True) and self._render_artifacts_valid(job) and self._artifact_valid(job, job / "outputs" / "preview.mp4", "preview-mp4")
 
     def _publish_output(self, job: Path, staged: Path, destination: Path, kind: str) -> None:
+        self._safe_target(job, staged, "work"); self._safe_target(job, destination, "outputs")
         try:
             os.link(staged, destination)
         except FileExistsError:
@@ -431,8 +434,10 @@ class NarrateService:
     def _require_utterances(context: dict[str, Any]) -> tuple[Utterance, ...]:
         if not NarrateService._valid_utterances(context.get("utterances")): raise _InputInvalid()
         return context["utterances"]
-    @staticmethod
-    def _staged_wavs(job: Path, utterances: Sequence[Utterance]) -> list[Path]: return [job / "work" / "utterances" / f"utterance-{item.index:04d}.wav" for item in utterances]
+    def _staged_wavs(self, job: Path, utterances: Sequence[Utterance]) -> list[Path]:
+        paths = [job / "work" / "utterances" / f"utterance-{item.index:04d}.wav" for item in utterances]
+        for path in paths: self._safe_target(job, path, "work")
+        return paths
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True); temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -441,15 +446,21 @@ class NarrateService:
     @staticmethod
     def _require_absent(*paths: Path) -> None:
         if any(path.exists() for path in paths): raise _OutputInvalid()
-    @staticmethod
-    def _temporary_work_path(job: Path, suffix: str) -> Path:
-        return job / "work" / f".{uuid4().hex}{suffix}"
+    def _temporary_work_path(self, job: Path, suffix: str) -> Path:
+        path = job / "work" / f".{uuid4().hex}{suffix}"; self._safe_target(job, path, "work"); return path
     @staticmethod
     def _safe_roots(job: Path) -> None:
         root = Path(job).resolve(strict=True)
         for name in ("inputs", "work", "outputs"):
             child = (root / name).resolve(strict=True)
             if child == root or not child.is_relative_to(root): raise _InputInvalid()
+    @staticmethod
+    def _safe_target(job: Path, path: Path, root_name: str) -> None:
+        root = (Path(job) / root_name).resolve(strict=True)
+        candidate = Path(path)
+        parent = candidate.parent.resolve(strict=False)
+        if not parent.is_relative_to(root): raise _UnsafePath()
+        if candidate.exists() and not candidate.resolve(strict=True).is_relative_to(root): raise _UnsafePath()
     def _script_ref(self, job: Path) -> InputRef:
         manifest = self._store.load(job, recover_interrupted=False)
         if len(manifest.inputs) != 2: raise _InputInvalid()
@@ -457,7 +468,9 @@ class NarrateService:
     def _request_from_manifest(self, manifest: JobManifest, job: Path) -> NarrateRequest:
         try:
             if len(manifest.inputs) != 2: raise ValueError
-            request = NarrateRequest(Path(manifest.inputs[0].path), Path(manifest.inputs[1].path), manifest.name, job.parent, manifest.settings["preview"])
+            preview = manifest.settings["preview"]
+            if type(preview) is not bool: raise ValueError
+            request = NarrateRequest(Path(manifest.inputs[0].path), Path(manifest.inputs[1].path), manifest.name, job.parent, preview)
             self._validate_request(request); return request
         except (KeyError, TypeError, ValueError): raise _InputInvalid() from None
     @staticmethod

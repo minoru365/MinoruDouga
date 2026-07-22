@@ -230,6 +230,15 @@ def test_resume_rejects_changed_original_inputs_and_exact_settings(tmp_path: Pat
         service.resume(job_dir)
 
 
+@pytest.mark.parametrize("preview", [0, 1, "false"])
+def test_resume_rejects_non_boolean_persisted_preview_setting(tmp_path: Path, preview: object):
+    from minoru_studio.narrate.service import NarrateFailed
+    fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
+    JobStore().update(job_dir, lambda manifest: (setattr(manifest, "status", JobStatus.FAILED), manifest.settings.__setitem__("preview", preview)))
+    with pytest.raises(NarrateFailed, match="^input validation:"):
+        service.resume(job_dir)
+
+
 def test_resume_reuses_valid_preceding_steps_and_resets_from_first_invalid_work(tmp_path: Path):
     fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
     JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
@@ -257,6 +266,16 @@ def test_resume_reuses_only_matching_staged_wavs_and_engine_change_invalidates_t
         if path.is_file(): path.unlink()
     fake.engine = "changed-engine"; before = fake.calls.count("synthesize")
     service.resume(job_dir)
+    assert fake.calls.count("synthesize") == before + 2
+
+
+def test_changed_engine_invalidates_an_already_succeeded_synthesis_step(tmp_path: Path):
+    fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+    fake.engine = "new-engine"; before = fake.calls.count("synthesize")
+
+    service.resume(job_dir)
+
     assert fake.calls.count("synthesize") == before + 2
 
 
@@ -396,6 +415,23 @@ def test_resume_rejects_root_escaping_alias(tmp_path: Path, monkeypatch: pytest.
         service.resume(job_dir)
 
     monkeypatch.undo()
+
+
+@pytest.mark.parametrize("root_name,nested", [("work", "utterances"), ("outputs", "utterances")])
+def test_resume_rejects_nested_alias_before_any_external_write_or_delete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_name: str, nested: str):
+    from minoru_studio.narrate.service import NarrateFailed
+    fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
+    JobStore().update(job_dir, lambda manifest: (setattr(manifest, "status", JobStatus.FAILED), setattr(manifest.steps["synthesize-utterances"], "status", StepStatus.INTERRUPTED), manifest.steps.pop("concat-audio"), manifest.steps.pop("render-artifacts")))
+    outside = tmp_path / f"outside-{root_name}"; outside.mkdir(); marker = outside / "marker"; marker.write_bytes(b"keep")
+    original = type(job_dir).resolve; redirected = job_dir / root_name / nested
+    def redirect(path: Path, *args, **kwargs):
+        resolved = original(path, *args, **kwargs)
+        return outside if resolved == redirected else resolved
+    monkeypatch.setattr(type(job_dir), "resolve", redirect)
+
+    with pytest.raises(NarrateFailed, match="^input validation:"):
+        service.resume(job_dir)
+    assert marker.read_bytes() == b"keep"
 
 
 def test_tampered_successful_final_output_is_rejected_without_overwrite_or_delete(tmp_path: Path):
