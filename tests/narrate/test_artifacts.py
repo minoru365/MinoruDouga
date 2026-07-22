@@ -7,6 +7,7 @@ from minoru_studio.jobs.model import ArtifactRecord, JobMode
 from minoru_studio.jobs.store import JobStore, fingerprint_artifact
 from minoru_studio.narrate.artifacts import artifacts_valid, build_timeline, read_duration_warning, write_subtitles
 from minoru_studio.narrate.models import DurationWarning, TimedUtterance, Utterance, WavInfo
+import minoru_studio.narrate.artifacts as artifacts
 
 
 def test_timeline_rounds_cumulative_decimal_boundaries_not_individual_durations(tmp_path: Path):
@@ -44,6 +45,31 @@ def test_subtitles_separate_multiple_srt_and_vtt_cue_blocks(tmp_path: Path):
         "WEBVTT\n\n00:00:00.000 --> 00:00:00.100\n一\n\n"
         "00:00:00.400 --> 00:00:00.500\n二\n"
     )
+
+
+def test_subtitle_staging_failure_removes_only_current_temporary_files(tmp_path: Path, monkeypatch):
+    outputs = tmp_path / "outputs"
+    cue = TimedUtterance(1, "字幕", 0, 100, "utterances/utterance-0001.wav")
+    original_stage = artifacts._stage_text
+    calls = 0
+    def fail_second_stage(destination: Path, text: str) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("VTT staging failed")
+        return original_stage(destination, text)
+    monkeypatch.setattr(artifacts, "_stage_text", fail_second_stage)
+
+    try:
+        write_subtitles(outputs, (cue,))
+    except OSError as exc:
+        assert str(exc) == "VTT staging failed"
+    else:
+        raise AssertionError("second subtitle staging must fail")
+
+    assert list(outputs.glob(".*.tmp")) == []
+    assert not (outputs / "subtitles.srt").exists()
+    assert not (outputs / "subtitles.vtt").exists()
 
 
 def test_artifacts_valid_requires_exact_output_and_manifest_set_and_reads_content_free_warning(tmp_path: Path):

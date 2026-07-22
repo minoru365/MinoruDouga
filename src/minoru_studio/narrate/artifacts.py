@@ -39,15 +39,18 @@ def write_subtitles(outputs_dir: Path, cues: Sequence[TimedUtterance]) -> tuple[
     _validate_cues(cues)
     if srt.exists() or vtt.exists():
         raise ValueError("final artifact already exists")
-    temporary_srt = _stage_text(srt, _render_srt(cues)); temporary_vtt = _stage_text(vtt, _render_vtt(cues))
+    temporary_srt: Path | None = None; temporary_vtt: Path | None = None
     published: list[tuple[Path, Path]] = []
     try:
+        temporary_srt = _stage_text(srt, _render_srt(cues))
+        temporary_vtt = _stage_text(vtt, _render_vtt(cues))
         _publish_create_only(temporary_srt, srt); published.append((temporary_srt, srt))
         _publish_create_only(temporary_vtt, vtt); published.append((temporary_vtt, vtt))
     except BaseException:
         _rollback(published); raise
     finally:
-        temporary_srt.unlink(missing_ok=True); temporary_vtt.unlink(missing_ok=True)
+        if temporary_srt is not None: temporary_srt.unlink(missing_ok=True)
+        if temporary_vtt is not None: temporary_vtt.unlink(missing_ok=True)
     return srt, vtt
 
 
