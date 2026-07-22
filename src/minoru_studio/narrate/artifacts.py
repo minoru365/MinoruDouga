@@ -83,11 +83,11 @@ def artifacts_valid(job_dir: Path, *, include_preview: bool) -> bool:
             "outputs/subtitles.vtt": "subtitles-vtt",
             **({"outputs/preview.mp4": "preview-mp4"} if include_preview else {}),
         }
-        if any(not path.is_file() or not path.resolve().is_relative_to(root) for path in expected): return False
-        actual = {path.resolve() for path in outputs.rglob("*") if path.is_file()}
-        if actual != {path.resolve() for path in expected}: return False
-        manifest = JobStore().load(root, recover_interrupted=False)
         expected_paths = set(expected_kinds)
+        if any(not path.is_file() or not path.resolve().is_relative_to(root) for path in expected): return False
+        actual = {path.relative_to(root).as_posix() for path in outputs.rglob("*") if path.is_file()}
+        if actual != expected_paths: return False
+        manifest = JobStore().load(root, recover_interrupted=False)
         if len(manifest.artifacts) != len(expected) or {item.path for item in manifest.artifacts} != expected_paths: return False
         for path in expected:
             matches = [item for item in manifest.artifacts if item.path == path.relative_to(root).as_posix()]

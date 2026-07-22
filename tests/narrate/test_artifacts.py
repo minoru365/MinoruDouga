@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from minoru_studio.jobs.model import ArtifactRecord, JobMode
 from minoru_studio.jobs.store import JobStore, fingerprint_artifact
 from minoru_studio.narrate.artifacts import artifacts_valid, build_timeline, read_duration_warning, write_subtitles
@@ -119,9 +121,18 @@ def test_artifacts_valid_requires_exact_output_and_manifest_set_and_reads_conten
         size=manifest.artifacts[0].size, sha256=manifest.artifacts[0].sha256,
     )))
     assert not artifacts_valid(job, include_preview=True)
+    JobStore().update(job, lambda manifest: manifest.artifacts.__setitem__(0, records[0]))
+    assert artifacts_valid(job, include_preview=True)
     (outputs / "extra.txt").write_text("no", encoding="utf-8")
     assert not artifacts_valid(job, include_preview=True)
     (outputs / "extra.txt").unlink()
+    alias = outputs / "extra.txt"
+    try:
+        alias.symlink_to(outputs / "narration.wav")
+    except OSError:
+        pytest.skip("symlink capability is unavailable")
+    assert not artifacts_valid(job, include_preview=True)
+    alias.unlink()
     warning = job / "work" / "duration-warning.json"
     warning.write_text('{"source_duration_ms": 1000, "narration_duration_ms": 1300}\n', encoding="utf-8")
     assert read_duration_warning(job) == DurationWarning(1_000, 1_300)
