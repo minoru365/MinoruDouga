@@ -206,7 +206,7 @@ def _temporary_sibling(path: Path, suffix: str) -> Path:
 
 
 def _concat_path(path: Path) -> str:
-    return str(path.resolve()).replace("'", r"'\\''")
+    return str(path.resolve()).replace("'", r"'\''")
 
 
 def _publish_create_only(temporary: Path, destination: Path) -> None:

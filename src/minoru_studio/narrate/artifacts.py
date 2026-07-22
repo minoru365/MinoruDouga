@@ -73,15 +73,23 @@ def artifacts_valid(job_dir: Path, *, include_preview: bool) -> bool:
         if not wavs or [path.name for path in wavs] != [f"utterance-{index:04d}.wav" for index in range(1, len(wavs) + 1)]: return False
         names = ["narration.wav", "subtitles.srt", "subtitles.vtt"] + (["preview.mp4"] if include_preview else [])
         expected = [*wavs, *(outputs / name for name in names)]
+        expected_kinds = {
+            **{path.relative_to(root).as_posix(): "utterance-wav" for path in wavs},
+            "outputs/narration.wav": "narration-wav",
+            "outputs/subtitles.srt": "subtitles-srt",
+            "outputs/subtitles.vtt": "subtitles-vtt",
+            **({"outputs/preview.mp4": "preview-mp4"} if include_preview else {}),
+        }
         if any(not path.is_file() or not path.resolve().is_relative_to(root) for path in expected): return False
         actual = {path.resolve() for path in outputs.rglob("*") if path.is_file()}
         if actual != {path.resolve() for path in expected}: return False
         manifest = JobStore().load(root, recover_interrupted=False)
-        expected_paths = {path.relative_to(root).as_posix() for path in expected}
+        expected_paths = set(expected_kinds)
         if len(manifest.artifacts) != len(expected) or {item.path for item in manifest.artifacts} != expected_paths: return False
         for path in expected:
             matches = [item for item in manifest.artifacts if item.path == path.relative_to(root).as_posix()]
-            if len(matches) != 1 or fingerprint_artifact(root, path, matches[0].kind) != matches[0]: return False
+            if len(matches) != 1 or matches[0].kind != expected_kinds[matches[0].path]: return False
+            if fingerprint_artifact(root, path, expected_kinds[matches[0].path]) != matches[0]: return False
     except (OSError, ValueError, TypeError):
         return False
     return True
@@ -100,11 +108,17 @@ def _validate_cues(cues: Sequence[TimedUtterance]) -> None:
 
 
 def _render_srt(cues: Sequence[TimedUtterance]) -> str:
-    return "".join(f"{cue.index}\n{_timestamp(cue.start_ms, ',')} --> {_timestamp(cue.end_ms, ',')}\n{cue.text}\n" for cue in cues)
+    return "\n".join(
+        f"{cue.index}\n{_timestamp(cue.start_ms, ',')} --> {_timestamp(cue.end_ms, ',')}\n{cue.text}\n"
+        for cue in cues
+    )
 
 
 def _render_vtt(cues: Sequence[TimedUtterance]) -> str:
-    return "WEBVTT\n\n" + "".join(f"{_timestamp(cue.start_ms, '.')} --> {_timestamp(cue.end_ms, '.')}\n{cue.text}\n" for cue in cues)
+    return "WEBVTT\n\n" + "\n".join(
+        f"{_timestamp(cue.start_ms, '.')} --> {_timestamp(cue.end_ms, '.')}\n{cue.text}\n"
+        for cue in cues
+    )
 
 
 def _timestamp(milliseconds: int, separator: str) -> str:

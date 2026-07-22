@@ -103,6 +103,19 @@ def test_concat_rejects_mismatched_shapes_and_nonzero_or_missing_output(tmp_path
         concat_wavs([first, second], tmp_path / "out.wav", silence_ms=300, runner=failed_ffmpeg, cancel_event=None)
 
 
+def test_concat_list_uses_single_backslash_apostrophe_escape(tmp_path: Path):
+    source = tmp_path / "a'b.wav"; pcm(source)
+    captured: list[str] = []
+    def runner(args, **kwargs):
+        if args[0] == "ffmpeg":
+            captured.append(Path(args[args.index("-i") + 1]).read_text(encoding="utf-8"))
+            pcm(Path(args[-1])); return result()
+        return result(stdout=probe("0.3335", []))
+    concat_wavs([source], tmp_path / "narration.wav", silence_ms=300, runner=runner, cancel_event=None)
+    expected_path = str(source.resolve()).replace("'", r"'\''")
+    assert captured == [f"file '{expected_path}'\n"]
+
+
 def test_preview_maps_generated_audio_holds_video_and_validates_longer_duration(tmp_path: Path):
     source, narration, subtitles = tmp_path / "source.mp4", tmp_path / "narration.wav", tmp_path / "subs.srt"
     subtitles.write_text("", encoding="utf-8")
