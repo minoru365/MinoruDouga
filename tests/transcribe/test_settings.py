@@ -52,3 +52,19 @@ def test_transcribe_save_preserves_latest_beat_sync_section(tmp_path):
         "beat_sync": {"music": "song.wav", "secret": "drop"},
         "transcribe": {"model": "medium"},
     }
+
+
+def test_transcribe_save_preserves_script_draft_and_unknown_sections(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"script_draft": {"name": "draft"}, "other": {"keep": True}}),
+        encoding="utf-8",
+    )
+
+    save_settings({"model": "medium"}, path)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "script_draft": {"name": "draft"},
+        "transcribe": {"model": "medium"},
+        "other": {"keep": True},
+    }
