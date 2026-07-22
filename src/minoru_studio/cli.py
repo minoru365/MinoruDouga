@@ -18,6 +18,10 @@ from minoru_studio.transcribe.commands import (
     parse_language,
     transcribe_command,
 )
+from minoru_studio.script_draft.commands import (
+    _ScriptDraftCreateOptionAction,
+    script_draft_command,
+)
 
 
 def launch_gui() -> None:
@@ -157,6 +161,28 @@ def build_parser() -> argparse.ArgumentParser:
     renumber_parser.add_argument("folder")
     renumber_parser.add_argument("-Apply", "--apply", action="store_true")
     renumber_parser.set_defaults(handler=renumber_sequence_command)
+
+    script_draft_parser = subparsers.add_parser(
+        "script-draft",
+        help="extract local video frames and create a script template",
+        description=(
+            "create: INPUT_PATH -Name NAME -OutputDir OUTPUT_DIR\n"
+            "resume: resume JOB_DIR"
+        ),
+    )
+    script_draft_parser.set_defaults(
+        handler=script_draft_command,
+        command_parser=script_draft_parser,
+        _script_draft_create_options=frozenset(),
+    )
+    script_draft_parser.add_argument("input_or_action", metavar="INPUT_PATH | resume")
+    script_draft_parser.add_argument("resume_job", nargs="?", metavar="JOB_DIR")
+    script_draft_parser.add_argument(
+        "-Name", "--name", dest="name", action=_ScriptDraftCreateOptionAction,
+    )
+    script_draft_parser.add_argument(
+        "-OutputDir", "--output-dir", dest="output_dir", action=_ScriptDraftCreateOptionAction,
+    )
     return parser
 
 

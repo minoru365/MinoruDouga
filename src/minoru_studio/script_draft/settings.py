@@ -6,16 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 
-ALLOWED_KEYS = {
-    "input",
-    "name",
-    "output_dir",
-    "model",
-    "language",
-    "normalize",
-    "denoise",
-    "preview",
-}
+ALLOWED_KEYS = {"input", "name", "output_dir"}
 
 
 def default_settings_path() -> Path:
@@ -25,19 +16,16 @@ def default_settings_path() -> Path:
 
 
 def load_settings(path: str | Path | None = None) -> dict[str, object]:
-    payload = _read(path)
-    section = payload.get("transcribe")
-    if not isinstance(section, dict):
-        return {}
-    return _allowed(section)
+    section = _read(path).get("script_draft")
+    return _allowed(section) if isinstance(section, dict) else {}
 
 
 def save_settings(values: dict[str, object], path: str | Path | None = None) -> None:
     target = Path(path) if path else default_settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    latest = _read(target)
-    latest["transcribe"] = _allowed(values)
-    _write(target, latest)
+    payload = _read(target)
+    payload["script_draft"] = _allowed(values)
+    _write(target, payload)
 
 
 def _allowed(values: dict[str, object]) -> dict[str, object]:

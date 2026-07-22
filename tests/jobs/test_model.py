@@ -60,6 +60,27 @@ def test_malformed_steps_are_rejected_as_manifest_error():
         manifest_from_dict(data)
 
 
+def test_script_draft_steps_are_restored_in_mode_order_before_unknown_steps():
+    manifest = new_manifest("draft", JobMode.SCRIPT_DRAFT)
+    manifest.steps = {
+        "render-draft": StepRecord(),
+        "custom": StepRecord(),
+        "extract-interval-frames": StepRecord(),
+        "probe-input": StepRecord(),
+        "extract-scene-frames": StepRecord(),
+    }
+
+    restored = manifest_from_dict(manifest_to_dict(manifest))
+
+    assert list(restored.steps) == [
+        "probe-input",
+        "extract-scene-frames",
+        "extract-interval-frames",
+        "render-draft",
+        "custom",
+    ]
+
+
 def test_all_fixed_modes_are_declared():
     assert {mode.value for mode in JobMode} == {
         "beat-sync",

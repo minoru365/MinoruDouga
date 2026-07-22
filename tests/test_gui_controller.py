@@ -134,6 +134,54 @@ def test_controller_resumes_transcription_and_keeps_falsy_injected_service(tmp_p
     assert calls[0][1]["allow_model_download"] is True
 
 
+def test_controller_prepares_script_draft_with_injected_service_and_forwards_callbacks(tmp_path):
+    calls = []
+    events = []
+
+    class Service:
+        def create_and_run(self, request, **kwargs):
+            calls.append({"request": request, **kwargs})
+            kwargs["progress"]("render-draft")
+            return tmp_path / "demo.media-job"
+
+    cancel = __import__("threading").Event()
+    controller = LauncherController(script_draft_service=Service())
+
+    result = controller.prepare_script_draft(
+        input_path="input.mp4",
+        name="demo",
+        output_dir=str(tmp_path),
+        cancel_event=cancel,
+        progress=events.append,
+    )
+
+    assert result.name == "demo.media-job"
+    assert calls[0]["request"].input_path.name == "input.mp4"
+    assert calls[0]["cancel_event"] is cancel
+    assert events == ["render-draft"]
+
+
+def test_controller_resumes_script_draft_and_keeps_falsy_injected_service(tmp_path):
+    calls = []
+
+    class FalsyService:
+        def __bool__(self):
+            return False
+
+        def resume(self, job_dir, **kwargs):
+            calls.append((job_dir, kwargs))
+            return tmp_path / "demo.media-job"
+
+    cancel = __import__("threading").Event()
+    controller = LauncherController(script_draft_service=FalsyService())
+
+    assert controller.resume_script_draft(
+        str(tmp_path / "demo.media-job"),
+        cancel_event=cancel,
+    ) == tmp_path / "demo.media-job"
+    assert calls[0][1]["cancel_event"] is cancel
+
+
 def test_controller_builds_model_prompt_without_authorization_data(monkeypatch):
     expected = ModelPrompt(False, "small", 500, 1_000, 2_000, "cache")
     monkeypatch.setattr(gui, "model_prompt", lambda model: expected)

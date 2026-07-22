@@ -8,15 +8,6 @@ from uuid import uuid4
 
 
 SCHEMA_VERSION = 1
-_TRANSCRIBE_STEP_ORDER = (
-    "probe-input",
-    "extract-audio",
-    "transcribe",
-    "render-artifacts",
-    "render-preview",
-)
-
-
 class ManifestError(ValueError):
     pass
 
@@ -27,6 +18,23 @@ class JobMode(StrEnum):
     NARRATE = "narrate"
     SCRIPT_DRAFT = "script-draft"
     REPO_DEMO = "repo-demo"
+
+
+_STEP_ORDERS = {
+    JobMode.TRANSCRIBE: (
+        "probe-input",
+        "extract-audio",
+        "transcribe",
+        "render-artifacts",
+        "render-preview",
+    ),
+    JobMode.SCRIPT_DRAFT: (
+        "probe-input",
+        "extract-scene-frames",
+        "extract-interval-frames",
+        "render-draft",
+    ),
+}
 
 
 class JobStatus(StrEnum):
@@ -129,6 +137,7 @@ def manifest_from_dict(data: Mapping[str, Any]) -> JobManifest:
             f"unsupported schema_version: {data.get('schema_version')}"
         )
     try:
+        mode = JobMode(data["mode"])
         steps = data.get("steps", {})
         if not isinstance(steps, Mapping):
             raise TypeError("steps must be a mapping")
@@ -136,7 +145,7 @@ def manifest_from_dict(data: Mapping[str, Any]) -> JobManifest:
             schema_version=SCHEMA_VERSION,
             job_id=str(data["job_id"]),
             name=str(data["name"]),
-            mode=JobMode(data["mode"]),
+            mode=mode,
             status=JobStatus(data["status"]),
             created_at=str(data["created_at"]),
             updated_at=str(data["updated_at"]),
@@ -146,7 +155,7 @@ def manifest_from_dict(data: Mapping[str, Any]) -> JobManifest:
                 name: StepRecord(
                     **{**step, "status": StepStatus(step["status"])}
                 )
-                for name, step in _ordered_steps(steps)
+                for name, step in _ordered_steps(steps, mode)
             },
             artifacts=[
                 ArtifactRecord(**item) for item in data.get("artifacts", [])
@@ -159,7 +168,9 @@ def manifest_from_dict(data: Mapping[str, Any]) -> JobManifest:
         raise ManifestError(f"invalid manifest: {exc}") from exc
 
 
-def _ordered_steps(steps: Mapping[str, Any]) -> list[tuple[str, Any]]:
-    known = [name for name in _TRANSCRIBE_STEP_ORDER if name in steps]
-    remaining = [name for name in steps if name not in _TRANSCRIBE_STEP_ORDER]
+def _ordered_steps(
+    steps: Mapping[str, Any], mode: JobMode,
+) -> list[tuple[str, Any]]:
+    known = [name for name in _STEP_ORDERS.get(mode, ()) if name in steps]
+    remaining = [name for name in steps if name not in known]
     return [(name, steps[name]) for name in (*known, *remaining)]

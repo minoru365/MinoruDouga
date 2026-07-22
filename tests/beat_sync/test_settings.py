@@ -45,3 +45,19 @@ def test_legacy_flat_beat_sync_settings_load_and_migrate_without_losing_transcri
         "beat_sync": {"music": "new.wav"},
         "transcribe": {"model": "medium", "authorization": "drop"},
     }
+
+
+def test_beat_sync_save_preserves_script_draft_and_unknown_sections(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"script_draft": {"name": "draft"}, "other": {"keep": True}}),
+        encoding="utf-8",
+    )
+
+    save_settings({"music": "song.wav"}, path)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "beat_sync": {"music": "song.wav"},
+        "script_draft": {"name": "draft"},
+        "other": {"keep": True},
+    }

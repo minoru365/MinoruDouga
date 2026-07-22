@@ -15,6 +15,7 @@ ALLOWED_KEYS = {
     "name",
     "output_dir",
 }
+_LEGACY_KEYS = ALLOWED_KEYS
 
 
 def default_settings_path():
@@ -35,16 +36,11 @@ def save_settings(values, path=None):
     target = Path(path) if path else default_settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     latest = _read(target)
-    transcribe = latest.get("transcribe")
-    if not isinstance(transcribe, dict):
-        transcribe = {}
-    _write(
-        target,
-        {
-            "beat_sync": _allowed(values),
-            "transcribe": transcribe,
-        },
-    )
+    if not isinstance(latest.get("beat_sync"), dict):
+        for key in _LEGACY_KEYS:
+            latest.pop(key, None)
+    latest["beat_sync"] = _allowed(values)
+    _write(target, latest)
 
 
 def _allowed(values):
