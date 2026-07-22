@@ -162,6 +162,9 @@ class NarrateService:
         provenance = self._voicevox.preflight(cancel_event=cancel_event)
         if not isinstance(provenance, VoicevoxProvenance) or provenance.speaker_name != _SPEAKER or provenance.style_name != _STYLE: raise VoicevoxUnavailable()
         old = self._load_provenance(job); reuse = old == provenance
+        if not reuse:
+            for staged_path in (job / "work" / "utterances").glob("utterance-*.wav"):
+                staged_path.unlink(missing_ok=True)
         self._write_json(job / "work" / "voicevox-provenance.json", {**asdict(provenance), "script_sha256": script_hash})
         staged: list[Path] = []
         for utterance in utterances:
@@ -211,7 +214,10 @@ class NarrateService:
         validators = {"probe-input": lambda: self._load_video(job, context, request.preview), "parse-script": lambda: self._load_utterances(job, context), "synthesize-utterances": lambda: self._load_synthesis(job, context), "concat-audio": lambda: self._valid_wav(job / "outputs" / "narration.wav"), "render-artifacts": lambda: self._artifacts_validator(job, include_preview=False), "render-preview": lambda: self._artifacts_validator(job, include_preview=True)}
         for index, name in enumerate(steps):
             record = manifest.steps.get(name)
-            if record is None or record.status is not StepStatus.SUCCEEDED or not validators[name]():
+            valid = validators[name]()
+            if record is None or record.status is not StepStatus.SUCCEEDED or not valid:
+                if record is not None and record.status is StepStatus.SUCCEEDED and name in {"render-artifacts", "render-preview"} and any((job / "outputs").rglob("*")):
+                    raise _OutputInvalid()
                 self._store.update(job, lambda latest: self._reset_from(latest, steps, index)); return context, index
         return context, len(steps)
 
@@ -228,7 +234,7 @@ class NarrateService:
         def claim(manifest: JobManifest) -> None:
             if manifest.status not in allowed or manifest.mode is not JobMode.NARRATE: raise _InputInvalid()
             self._validate_inputs(manifest); self._safe_roots(job)
-            if manifest.settings != expected: raise _InputInvalid()
+            if not self._settings_match(manifest.settings, expected): raise _InputInvalid()
             manifest.status, manifest.last_error = JobStatus.RUNNING, None
         self._store.update(job, claim)
 
@@ -295,6 +301,9 @@ class NarrateService:
 
     @staticmethod
     def _settings(request: NarrateRequest) -> dict[str, Any]: return {"speaker_name": _SPEAKER, "style_name": _STYLE, "speed_scale": 1.0, "silence_ms": 300, "max_utterance_codepoints": 60, "script_format": request.script_path.suffix.casefold(), "preview": request.preview}
+    @staticmethod
+    def _settings_match(actual: object, expected: dict[str, Any]) -> bool:
+        return isinstance(actual, dict) and set(actual) == set(expected) and all(type(actual[key]) is type(expected[key]) and actual[key] == expected[key] for key in expected)
     @staticmethod
     def _steps(preview: bool) -> tuple[str, ...]: return (*_STEPS, *((_PREVIEW,) if preview else ()))
     @staticmethod
