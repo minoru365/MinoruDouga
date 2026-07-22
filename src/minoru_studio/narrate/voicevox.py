@@ -96,7 +96,7 @@ class VoicevoxClient:
     ) -> Any:
         _, data = self._request(method, path, body, headers, cancel_event, error_type, _JSON_LIMIT)
         try:
-            return json.loads(data.decode("utf-8"))
+            return json.loads(data.decode("utf-8"), parse_constant=_reject_json_constant)
         except (json.JSONDecodeError, UnicodeDecodeError):
             raise error_type() from None
 
@@ -159,3 +159,7 @@ def _resolve_speaker_id(speakers: Any) -> int:
 
 def _is_audio_wav(content_type: str | None) -> bool:
     return type(content_type) is str and content_type.split(";", 1)[0].strip().casefold() == "audio/wav"
+
+
+def _reject_json_constant(_: str) -> None:
+    raise ValueError

@@ -180,6 +180,28 @@ def test_preflight_rejects_oversized_json_without_exposing_body():
     assert response.read_amount == 8 * 1024 * 1024 + 1
 
 
+@pytest.mark.parametrize("constant", [b"NaN", b"Infinity", b"-Infinity"])
+def test_preflight_rejects_non_rfc_json_constants(constant: bytes):
+    client, _ = client_with(
+        FakeResponse(body=b'"0.25.2"'),
+        FakeResponse(body='[{"name":"ずんだもん","styles":[{"name":"ノーマル","id":2}],"extra":'.encode() + constant + b"}]"),
+    )
+
+    with pytest.raises(VoicevoxUnavailable, match=r"^VOICEVOX unavailable$"):
+        client.preflight()
+
+
+@pytest.mark.parametrize("constant", [b"NaN", b"Infinity", b"-Infinity"])
+def test_synthesize_rejects_non_rfc_json_constants(constant: bytes):
+    client, _ = client_with(
+        FakeResponse(body=b'{"speedScale":' + constant + b"}"),
+        FakeResponse(body=b"RIFF", headers={"Content-Type": "audio/wav"}),
+    )
+
+    with pytest.raises(VoicevoxSynthesisError, match=r"^VOICEVOX synthesis$"):
+        client.synthesize("private utterance", 2)
+
+
 @pytest.mark.parametrize(
     "speaker_body",
     [b"[]", json.dumps([{"name": "other", "styles": []}]).encode(), json.dumps([{"name": "ずんだもん", "styles": []}]).encode()],
