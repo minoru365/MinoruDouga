@@ -21,6 +21,7 @@ class Fakes:
         self.narration_seconds = Decimal("2.3")
         self.inspected_narration_seconds: Decimal | None = None
         self.cancel_concat = False
+        self.invalid_concat_output = False
         self.private = "private utterance"
         self.font: Path | None = None
         self.synthesis_error: Exception | None = None
@@ -55,6 +56,8 @@ class Fakes:
         return WavInfo(Decimal("1"), 24000, 1, 2)
 
     def inspect(self, path: Path) -> WavInfo:
+        if path.name == "narration.wav" and self.invalid_concat_output:
+            raise ValueError("invalid narration output")
         duration = (self.inspected_narration_seconds or self.narration_seconds) if path.name == "narration.wav" else (self.narration_seconds - Decimal("0.3")) / 2
         if not path.is_file():
             raise ValueError("missing fake wav")
@@ -65,7 +68,7 @@ class Fakes:
         if self.cancel_concat:
             raise ProcessCancelledError("private FFmpeg command")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"narration")
+        destination.write_bytes(b"invalid" if self.invalid_concat_output else b"narration")
         return WavInfo(self.narration_seconds, 24000, 1, 2)
 
     def subtitles(self, output: Path, cues):
@@ -266,6 +269,30 @@ def test_tampered_provenance_script_hash_invalidates_staged_wav_reuse(tmp_path: 
     service.resume(job_dir)
 
     assert fake.calls.count("synthesize") == before + 2
+
+
+def test_tampered_but_valid_staged_wav_is_not_reused_or_promoted(tmp_path: Path):
+    fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
+    JobStore().update(job_dir, lambda manifest: (setattr(manifest, "status", JobStatus.FAILED), setattr(manifest.steps["synthesize-utterances"], "status", StepStatus.INTERRUPTED), manifest.steps.pop("concat-audio"), manifest.steps.pop("render-artifacts")))
+    for path in (job_dir / "outputs").rglob("*"):
+        if path.is_file(): path.unlink()
+    staged = job_dir / "work" / "utterances" / "utterance-0001.wav"
+    staged.write_bytes(b"valid-looking altered staged wav")
+    before = fake.calls.count("synthesize")
+
+    service.resume(job_dir)
+
+    assert fake.calls.count("synthesize") == before + 1
+    assert (job_dir / "outputs" / "utterances" / "utterance-0001.wav").read_bytes() == b"fake wav"
+
+
+def test_concat_reinspects_its_published_output_before_marking_success(tmp_path: Path):
+    from minoru_studio.narrate.service import NarrateFailed
+    fake = Fakes(); fake.invalid_concat_output = True
+    with pytest.raises(NarrateFailed, match="^FFmpeg:") as failed:
+        _service(fake).create_and_run(_request(tmp_path))
+    manifest = JobStore().load(failed.value.job_dir, recover_interrupted=False)
+    assert manifest.steps["concat-audio"].status is StepStatus.FAILED
 
 
 @pytest.mark.parametrize(

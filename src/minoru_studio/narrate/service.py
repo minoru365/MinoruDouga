@@ -170,7 +170,10 @@ class NarrateService:
         staged: list[Path] = []
         for utterance in utterances:
             self._raise_if_cancelled(cancel_event); path = job / "work" / "utterances" / f"utterance-{utterance.index:04d}.wav"
-            if not (reuse and self._valid_wav(path)): self._publish_wav(self._voicevox.synthesize(utterance.text, provenance.speaker_id, cancel_event=cancel_event), path)
+            reusable_wav = reuse and self._staged_hash_matches(previous, utterance.index, path) and self._valid_wav(path)
+            if not reusable_wav:
+                path.unlink(missing_ok=True)
+                self._publish_wav(self._voicevox.synthesize(utterance.text, provenance.speaker_id, cancel_event=cancel_event), path)
             if not self._valid_wav(path): raise VoicevoxSynthesisError()
             staged.append(path)
         self._write_json(job / "work" / "voicevox-provenance.json", {**asdict(provenance), "script_sha256": script_hash, "utterance_indices": [item.index for item in utterances], "staged_wavs": [{"index": path_index, "sha256": fingerprint_file(path).sha256} for path_index, path in enumerate(staged, 1)]})
@@ -191,7 +194,9 @@ class NarrateService:
 
     def _concat_step(self, job: Path, context: dict[str, Any], cancel_event: object | None) -> None:
         wavs = self._staged_wavs(job, self._require_utterances(context))
-        context["narration"] = self._concat(wavs, job / "outputs" / "narration.wav", silence_ms=300, cancel_event=cancel_event)
+        reported = self._concat(wavs, job / "outputs" / "narration.wav", silence_ms=300, cancel_event=cancel_event)
+        if not isinstance(reported, WavInfo): raise _InputInvalid()
+        context["narration"] = self._inspect_wav(job / "outputs" / "narration.wav")
         if not isinstance(context["narration"], WavInfo): raise _InputInvalid()
         self._record(job, [fingerprint_artifact(job, job / "outputs" / "narration.wav", "narration-wav")])
 
@@ -299,6 +304,15 @@ class NarrateService:
         staged = data["staged_wavs"]
         if not isinstance(staged, list) or len(staged) != len(utterances): return False
         return all(isinstance(item, dict) and set(item) == {"index", "sha256"} and item["index"] == utterance.index and isinstance(item["sha256"], str) and len(item["sha256"]) == 64 for item, utterance in zip(staged, utterances, strict=True))
+
+    @staticmethod
+    def _staged_hash_matches(data: dict[str, Any] | None, index: int, path: Path) -> bool:
+        try:
+            if data is None or not isinstance(data.get("staged_wavs"), list): return False
+            matching = [item for item in data["staged_wavs"] if isinstance(item, dict) and item.get("index") == index]
+            return len(matching) == 1 and isinstance(matching[0].get("sha256"), str) and fingerprint_file(path).sha256 == matching[0]["sha256"]
+        except (OSError, ValueError):
+            return False
 
     def _state_fingerprint_valid(self, job: Path, path: Path, key: str) -> bool:
         try:
