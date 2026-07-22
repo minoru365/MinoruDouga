@@ -131,7 +131,12 @@ def _timestamp(milliseconds: int, separator: str) -> str:
 
 def _stage_text(destination: Path, text: str) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True); temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
-    temporary.write_text(text, encoding="utf-8"); return temporary
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        return temporary
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _publish_create_only(temporary: Path, destination: Path) -> None:

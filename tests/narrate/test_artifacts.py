@@ -72,6 +72,31 @@ def test_subtitle_staging_failure_removes_only_current_temporary_files(tmp_path:
     assert not (outputs / "subtitles.vtt").exists()
 
 
+def test_subtitle_write_failure_cleans_unreturned_vtt_temp_only(tmp_path: Path, monkeypatch):
+    outputs = tmp_path / "outputs"; outputs.mkdir()
+    preserved = outputs / "pre-existing.txt"; preserved.write_text("keep", encoding="utf-8")
+    cue = TimedUtterance(1, "字幕", 0, 100, "utterances/utterance-0001.wav")
+    original_write = Path.write_text
+    def fail_after_vtt_temp_creation(path: Path, text: str, *args, **kwargs):
+        if path.name.startswith(".subtitles.vtt."):
+            path.touch()
+            raise OSError("VTT write failed")
+        return original_write(path, text, *args, **kwargs)
+    monkeypatch.setattr(Path, "write_text", fail_after_vtt_temp_creation)
+
+    try:
+        write_subtitles(outputs, (cue,))
+    except OSError as exc:
+        assert str(exc) == "VTT write failed"
+    else:
+        raise AssertionError("VTT temporary write must fail")
+
+    assert preserved.read_text(encoding="utf-8") == "keep"
+    assert list(outputs.glob(".*.tmp")) == []
+    assert not (outputs / "subtitles.srt").exists()
+    assert not (outputs / "subtitles.vtt").exists()
+
+
 def test_artifacts_valid_requires_exact_output_and_manifest_set_and_reads_content_free_warning(tmp_path: Path):
     job = JobStore().create(tmp_path, "narrate", JobMode.NARRATE)
     outputs = job / "outputs"; utterances = outputs / "utterances"; utterances.mkdir()

@@ -112,8 +112,9 @@ def test_concat_list_uses_single_backslash_apostrophe_escape(tmp_path: Path):
             pcm(Path(args[-1])); return result()
         return result(stdout=probe("0.3335", []))
     concat_wavs([source], tmp_path / "narration.wav", silence_ms=300, runner=runner, cancel_event=None)
-    expected_path = str(source.resolve()).replace("'", r"'\''")
+    expected_path = source.resolve().as_posix().replace("'", r"'\''")
     assert captured == [f"file '{expected_path}'\n"]
+    assert "\\\\" not in captured[0]
 
 
 def test_preview_maps_generated_audio_holds_video_and_validates_longer_duration(tmp_path: Path):
