@@ -213,6 +213,15 @@ def test_controller_prepares_narration_forwards_callbacks_and_reads_warning(monk
     assert events == ["synthesize-utterances"]
 
 
+def test_narration_progress_message_never_includes_untrusted_service_text():
+    untrusted = "# ナレーション\n秘密の台本テキスト"
+
+    message = gui._narration_progress_message(untrusted)
+
+    assert message == "ナレーション: 処理中…"
+    assert untrusted not in message
+
+
 def test_controller_builds_model_prompt_without_authorization_data(monkeypatch):
     expected = ModelPrompt(False, "small", 500, 1_000, 2_000, "cache")
     monkeypatch.setattr(gui, "model_prompt", lambda model: expected)

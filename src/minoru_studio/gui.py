@@ -56,6 +56,21 @@ from minoru_studio.transcribe.settings import (
 )
 
 
+_NARRATION_PROGRESS_LABELS = {
+    "probe-input": "入力を確認中…",
+    "parse-script": "台本を確認中…",
+    "synthesize-utterances": "音声を生成中…",
+    "concat-audio": "音声を連結中…",
+    "render-artifacts": "字幕を作成中…",
+    "render-preview": "プレビューを作成中…",
+}
+
+
+def _narration_progress_message(step: object) -> str:
+    label = _NARRATION_PROGRESS_LABELS.get(step) if isinstance(step, str) else None
+    return f"ナレーション: {label or '処理中…'}"
+
+
 class LauncherController:
     def __init__(
         self,
@@ -1128,7 +1143,8 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         status_var.set("ナレーションを開始しています…")
 
         def progress(step: str) -> None:
-            root.after(0, lambda step=step: status_var.set(f"ナレーション: {step}"))
+            message = _narration_progress_message(step)
+            root.after(0, lambda: status_var.set(message))
 
         def worker() -> None:
             try:
