@@ -70,9 +70,13 @@ minoru-studio narrate resume .\jobs\product-demo.media-job
 ```
 
 Create requires one local regular video file, `-Script`, `-Name`, and
-`-OutputDir`. Resume accepts only the job directory. A non-interactive command
-never opens a dialog; it returns `0` on success, `130` on interruption, and
-`1` with a concise stable category on failure.
+`-OutputDir`. The manifest fingerprints both the video and script. The script
+is also copied without modification to `inputs/script.md` or
+`inputs/script.txt` so the approved text remains inside the job; the original
+video is referenced read-only and is not copied. Resume accepts only the job
+directory. A non-interactive command never opens a dialog; it returns `0` on
+success, `130` on interruption, and `1` with a concise stable category on
+failure.
 
 The input video must have a decodable video stream, a finite positive duration,
 and positive dimensions. It need not have an audio stream because the preview
@@ -140,6 +144,8 @@ Relevant output layout:
 
 ```text
 <name>.media-job/
+  inputs/
+    script.md or script.txt
   outputs/
     utterances/
       utterance-0001.wav
@@ -149,18 +155,25 @@ Relevant output layout:
     subtitles.vtt
     preview.mp4                 # only when requested
   work/
+    utterances/
+      utterance-0001.wav         # staged and resumable until publication
+      ...
     video-info.json
     utterances.json
     voicevox-provenance.json
+    duration-warning.json       # only when narration exceeds the video
 ```
 
 Each utterance starts at zero for the first utterance, or exactly 300 ms after
 the preceding utterance ends. Durations come from FFprobe measurements of the
-actual WAVs, are converted to integer milliseconds, and are used unchanged for
-both SRT and VTT. `narration.wav` includes the inserted silences. Its duration
-must equal the final utterance end time within one millisecond of FFprobe
-rounding. There is no attempt to align speech to `script.md` frame timestamps
-in this phase.
+actual WAVs. Preserve the measured decimal-second values while accumulating
+utterance and silence boundaries, then convert each cumulative boundary to an
+integer millisecond with the existing half-up timebase rule. This avoids
+per-utterance rounding drift. The resulting integer boundaries are used
+unchanged for both SRT and VTT. `narration.wav` includes the inserted silences.
+Its FFprobe-rounded duration must equal the final utterance end time within one
+millisecond. There is no attempt to align speech to `script.md` frame
+timestamps in this phase.
 
 SRT/VTT cue wording preserves the utterance text. SRT uses
 `HH:MM:SS,mmm`; VTT uses `HH:MM:SS.mmm`. All cues are positive, chronological,
@@ -172,12 +185,17 @@ manifest artifact records must exactly match the required outputs.
 `-Preview` is explicit. It uses the original video stream, generated
 `narration.wav`, and `subtitles.srt` to create a separate `outputs/preview.mp4`.
 The original audio is not mapped into the preview. Japanese font selection and
-stream/duration validation reuse the established transcribe preview rules.
+stream validation reuse the established transcribe preview rules. The preview
+lasts for the longer of the source video and narration. If narration is longer,
+FFmpeg holds the source video's final frame; it never uses `-shortest` or
+truncates narration/subtitles.
 
 If generated narration is longer than the input video, the job still succeeds
 after required artifacts validate. It records a content-free warning containing
-only source and narration durations. It must not change speech speed, delete
-audio, truncate subtitles, shorten text, or modify source video.
+only source and narration durations in `work/duration-warning.json`, writes the
+same values to the content-free job log, prints a CLI warning to stderr, and
+shows a GUI information dialog. It must not change speech speed, delete audio,
+truncate subtitles, shorten text, or modify source video.
 
 ## 7. Failure, Cancellation, and Resume
 
@@ -192,12 +210,24 @@ VOICEVOX request, marks the active step and job `interrupted`, and preserves
 completed artifacts. It never reports success.
 
 Resume is available only for pending, interrupted, or failed narration jobs
-whose single input fingerprint and every persisted setting exactly match.
+whose video and script fingerprints and every persisted setting exactly match.
 Completed steps are reused only if all their work/output files, path
 containment, WAV structures, measured durations, and artifact fingerprints
-validate. The first invalid/incomplete step and later steps rerun. Existing
-successful outputs are never overwritten; a different input/settings request
+validate. The first invalid/incomplete work step and later steps rerun.
+VOICEVOX WAVs are first staged under `work/utterances/`; a cancelled batch may
+reuse individually validated staged WAVs only when its saved Engine version,
+speaker identity, script fingerprint, and utterance index all still match.
+Final outputs are published create-only. If an existing final output no longer
+matches its successful artifact record, resume fails with a stable output
+validation category and directs the user to create a new suffixed job instead
+of overwriting or deleting it. A different input/settings request likewise
 uses a new suffixed job directory.
+
+Loopback HTTP calls use the literal host `127.0.0.1` and port `50021`, reject
+redirects, apply finite connect/read timeouts, and bound JSON/WAV response
+sizes. Cancellation is checked before `/version`, `/speakers`, each
+`/audio_query`, and each `/synthesis` request. No URL supplied by the Engine is
+followed.
 
 ## 8. Verification and Acceptance Boundary
 
