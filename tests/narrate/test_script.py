@@ -67,6 +67,16 @@ def test_markdown_reads_only_narration_sections_in_document_order(tmp_path: Path
     assert texts(source) == ("第一。", "第二。", "第三。")
 
 
+def test_markdown_nested_narration_heading_keeps_outer_section_boundary(tmp_path: Path):
+    source = write_script(
+        tmp_path,
+        "script.md",
+        "# ナレーション\n外側。\n## ナレーション\n内側。\n## 補足\n後続。\n# 終了\n除外。\n",
+    )
+
+    assert texts(source) == ("外側。", "内側。", "後続。")
+
+
 def test_markdown_excludes_non_narration_content_lines(tmp_path: Path):
     source = write_script(
         tmp_path,

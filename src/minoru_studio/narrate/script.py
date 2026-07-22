@@ -72,7 +72,7 @@ def _narration_lines(lines: list[str]) -> list[str]:
             title = heading.group(2).strip()
             if active_level is not None and level <= active_level:
                 active_level = None
-            if title == "ナレーション":
+            if title == "ナレーション" and active_level is None:
                 active_level = level
             continue
         if active_level is not None:
