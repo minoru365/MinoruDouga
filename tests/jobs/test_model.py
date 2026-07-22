@@ -81,6 +81,33 @@ def test_script_draft_steps_are_restored_in_mode_order_before_unknown_steps():
     ]
 
 
+def test_narrate_steps_are_restored_in_mode_order_before_unknown_steps():
+    manifest = new_manifest("narration", JobMode.NARRATE)
+    manifest.steps = {
+        "render-preview": StepRecord(),
+        "custom": StepRecord(),
+        "concat-audio": StepRecord(),
+        "probe-input": StepRecord(),
+        "parse-script": StepRecord(),
+        "synthesize-utterances": StepRecord(),
+        "render-artifacts": StepRecord(),
+        "later": StepRecord(),
+    }
+
+    restored = manifest_from_dict(manifest_to_dict(manifest))
+
+    assert list(restored.steps) == [
+        "probe-input",
+        "parse-script",
+        "synthesize-utterances",
+        "concat-audio",
+        "render-artifacts",
+        "render-preview",
+        "custom",
+        "later",
+    ]
+
+
 def test_all_fixed_modes_are_declared():
     assert {mode.value for mode in JobMode} == {
         "beat-sync",
