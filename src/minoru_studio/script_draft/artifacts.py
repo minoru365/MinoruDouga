@@ -106,19 +106,32 @@ def render_artifacts(
 def artifacts_valid(job_dir: Path) -> bool:
     try:
         root = Path(job_dir).resolve(strict=True)
-        outputs = root / "outputs"
-        frames_dir = outputs / "frames"
-        index_path = outputs / "frame-index.json"
-        script_path = outputs / "script.md"
+        outputs = (root / "outputs").resolve(strict=True)
+        frames_dir = (outputs / "frames").resolve(strict=True)
+        index_path = (outputs / "frame-index.json").resolve(strict=True)
+        script_path = (outputs / "script.md").resolve(strict=True)
+        if any(not path.is_relative_to(root) for path in (outputs, frames_dir, index_path, script_path)):
+            return False
         payload = json.loads(index_path.read_text(encoding="utf-8"))
         entries = _validated_index(payload, frames_dir)
         script = script_path.read_text(encoding="utf-8")
         expected_paths = [frames_dir / entry.image_path.removeprefix("frames/") for entry in entries]
         expected_paths.extend((index_path, script_path))
+        expected_frame_paths = {path.relative_to(root).as_posix() for path in expected_paths[:-2]}
+        actual_frame_paths = {
+            path.resolve(strict=True).relative_to(root).as_posix()
+            for path in frames_dir.glob(f"*.{FRAME_FORMAT}")
+        }
+        if actual_frame_paths != expected_frame_paths:
+            return False
         if any(entry.image_path not in script for entry in entries):
             return False
         manifest = JobStore().load(root, recover_interrupted=False)
-        if len(manifest.artifacts) < len(expected_paths):
+        expected_record_paths = {path.relative_to(root).as_posix() for path in expected_paths}
+        if (
+            len(manifest.artifacts) != len(expected_record_paths)
+            or {record.path for record in manifest.artifacts} != expected_record_paths
+        ):
             return False
         for path in expected_paths:
             matching = [record for record in manifest.artifacts if record.path == path.relative_to(root).as_posix()]

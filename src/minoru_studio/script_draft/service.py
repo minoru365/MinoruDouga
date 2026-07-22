@@ -166,6 +166,7 @@ class ScriptDraftService:
         current_step: str | None = None
         category = "input validation"
         try:
+            self._contained_job_paths(job_dir)
             try:
                 logger = self._logger_factory(job_dir)
             except Exception as exc:
@@ -251,7 +252,8 @@ class ScriptDraftService:
         info = self._probe(request.input_path)
         if not isinstance(info, VideoInfo):
             raise _InputInvalid("probe output is invalid")
-        self._write_json(job_dir / "work" / "video-info.json", {
+        _, work, _ = self._contained_job_paths(job_dir)
+        self._write_json(work / "video-info.json", {
             "duration_ms": info.duration_ms, "width": info.width, "height": info.height,
         })
         if not self._load_video_info(job_dir, context):
@@ -275,7 +277,8 @@ class ScriptDraftService:
     ) -> None:
         self._require_video_info(context)
         extractor = self._extract_scene if kind == "scene" else self._extract_interval
-        candidates = extractor(request.input_path, job_dir / "work", cancel_event=cancel_event)
+        _, work, _ = self._contained_job_paths(job_dir)
+        candidates = extractor(request.input_path, work, cancel_event=cancel_event)
         self._save_candidates(job_dir, kind, candidates)
         if not self._load_candidates(job_dir, kind, context):
             raise _InputInvalid("extracted frames did not validate")
@@ -285,7 +288,8 @@ class ScriptDraftService:
         scene = self._require_candidates(context, "scene")
         interval = self._require_candidates(context, "interval")
         self._clear_outputs(job_dir)
-        self._render(job_dir / "outputs", info, merge_candidates([*scene, *interval]))
+        _, _, outputs = self._contained_job_paths(job_dir)
+        self._render(outputs, info, merge_candidates([*scene, *interval]))
         self._record_artifacts(job_dir)
         if not artifacts_valid(job_dir):
             raise _InputInvalid("final artifacts did not validate")
@@ -293,7 +297,13 @@ class ScriptDraftService:
     def _save_candidates(self, job_dir: Path, kind: str, candidates: Sequence[FrameCandidate]) -> None:
         if kind not in _CANDIDATE_STATE or any(candidate.reason != kind for candidate in candidates):
             raise _InputInvalid("candidate output is invalid")
-        work = (job_dir / "work").resolve()
+        if kind == "interval" and (
+            not candidates
+            or candidates[0].time_ms != 0
+            or sum(candidate.time_ms == 0 for candidate in candidates) != 1
+        ):
+            raise _InputInvalid("candidate output is invalid")
+        _, work, _ = self._contained_job_paths(job_dir)
         state: list[dict[str, object]] = []
         for candidate in candidates:
             path = Path(candidate.source_path).resolve(strict=True)
@@ -305,7 +315,8 @@ class ScriptDraftService:
 
     def _load_video_info(self, job_dir: Path, context: dict[str, Any]) -> bool:
         try:
-            path = job_dir / "work" / "video-info.json"
+            _, work, _ = self._contained_job_paths(job_dir)
+            path = work / "video-info.json"
             fingerprint_file(path)
             payload = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict) or set(payload) != {"duration_ms", "width", "height"}:
@@ -319,7 +330,7 @@ class ScriptDraftService:
         try:
             if kind not in _CANDIDATE_STATE:
                 return False
-            work = (job_dir / "work").resolve()
+            _, work, _ = self._contained_job_paths(job_dir)
             path = work / _CANDIDATE_STATE[kind]
             fingerprint_file(path)
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -347,13 +358,19 @@ class ScriptDraftService:
                     return False
                 self._validate_png(image)
                 candidates.append(candidate)
+            if kind == "interval" and (
+                not candidates
+                or candidates[0].time_ms != 0
+                or sum(candidate.time_ms == 0 for candidate in candidates) != 1
+            ):
+                return False
             context[f"{kind}_candidates"] = candidates
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return False
         return True
 
     def _record_artifacts(self, job_dir: Path) -> None:
-        outputs = job_dir / "outputs"
+        _, _, outputs = self._contained_job_paths(job_dir)
         paths = [*sorted((outputs / "frames").glob(f"*.{FRAME_FORMAT}")), outputs / "frame-index.json", outputs / "script.md"]
         records: list[ArtifactRecord] = []
         for path in paths:
@@ -376,13 +393,19 @@ class ScriptDraftService:
         except (OSError, ValueError, struct.error):
             raise ValueError("candidate output is not a valid PNG") from None
 
-    @staticmethod
-    def _clear_outputs(job_dir: Path) -> None:
-        outputs = (job_dir / "outputs").resolve()
-        if not outputs.is_relative_to(job_dir.resolve()):
-            raise _InputInvalid("output path is outside job")
+    def _clear_outputs(self, job_dir: Path) -> None:
+        _, _, outputs = self._contained_job_paths(job_dir)
         shutil.rmtree(outputs, ignore_errors=True)
         outputs.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _contained_job_paths(job_dir: Path) -> tuple[Path, Path, Path]:
+        root = Path(job_dir).resolve(strict=True)
+        work = (root / "work").resolve(strict=True)
+        outputs = (root / "outputs").resolve(strict=True)
+        if not work.is_relative_to(root) or not outputs.is_relative_to(root):
+            raise _InputInvalid("job state path is outside job")
+        return root, work, outputs
 
     @staticmethod
     def _write_json(path: Path, data: dict[str, object]) -> None:

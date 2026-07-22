@@ -110,6 +110,12 @@ def _extract_candidates(
             raise ValueError("frame output is outside work directory")
         _validate_png_frame(resolved_frame)
         candidates.append(FrameCandidate(timestamp, frame, reason))
+    if reason == "interval" and (
+        not candidates
+        or candidates[0].time_ms != 0
+        or sum(candidate.time_ms == 0 for candidate in candidates) != 1
+    ):
+        raise ValueError("interval extraction requires exactly one initial zero-millisecond frame")
     return candidates
 
 

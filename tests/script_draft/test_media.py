@@ -82,19 +82,46 @@ def test_extract_scene_candidates_pairs_showinfo_times_with_safe_png_outputs(tmp
     ], cancel_event)
 
 
-def test_extract_interval_candidates_uses_five_second_filter_and_reason(tmp_path: Path):
+def test_extract_interval_candidates_requires_the_initial_zero_millisecond_frame(tmp_path: Path):
     source = tmp_path / "input.mp4"
     work = tmp_path / "work"
 
     def runner(args, *, cancel_event):
         _png(Path(args[-1]).parent / "frame-000001.png")
-        return _result(stderr="showinfo pts_time:5.0\n")
+        _png(Path(args[-1]).parent / "frame-000002.png")
+        return _result(stderr="showinfo pts_time:0.0\nshowinfo pts_time:5.0\n")
 
     candidates = extract_interval_candidates(source, work, runner=runner)
 
-    assert [(candidate.time_ms, candidate.reason) for candidate in candidates] == [(5_000, "interval")]
+    assert [(candidate.time_ms, candidate.reason) for candidate in candidates] == [
+        (0, "interval"), (5_000, "interval"),
+    ]
     assert candidates[0].source_path.parent.parent == work / "interval-frames"
     assert candidates[0].source_path.parent.name.startswith(".frames-")
+
+
+@pytest.mark.parametrize("timestamps", ("", "showinfo pts_time:5.0\n"))
+def test_extract_interval_candidates_rejects_missing_initial_zero_millisecond_frame(
+    tmp_path: Path, timestamps: str,
+):
+    def runner(args, *, cancel_event):
+        if timestamps:
+            _png(Path(args[-1]).parent / "frame-000001.png")
+        return _result(stderr=timestamps)
+
+    with pytest.raises(ValueError, match="^interval extraction requires exactly one initial zero-millisecond frame$"):
+        extract_interval_candidates(tmp_path / "input.mp4", tmp_path / "work", runner=runner)
+
+
+def test_extract_interval_candidates_rejects_duplicate_zero_millisecond_frames(tmp_path: Path):
+    def runner(args, *, cancel_event):
+        output = Path(args[-1]).parent
+        _png(output / "frame-000001.png")
+        _png(output / "frame-000002.png")
+        return _result(stderr="showinfo pts_time:0.0\nshowinfo pts_time:0.0\n")
+
+    with pytest.raises(ValueError, match="^interval extraction requires exactly one initial zero-millisecond frame$"):
+        extract_interval_candidates(tmp_path / "input.mp4", tmp_path / "work", runner=runner)
 
 
 def test_candidate_extraction_isolates_outputs_without_mutating_matching_source(tmp_path: Path):
@@ -104,6 +131,7 @@ def test_candidate_extraction_isolates_outputs_without_mutating_matching_source(
     source = output / "frame-000001.png"
     _png(source, 1, 1)
     source_before = source.read_bytes()
+    source_mtime_ns = source.stat().st_mtime_ns
 
     def runner(args, *, cancel_event):
         assert source.read_bytes() == source_before
@@ -117,6 +145,7 @@ def test_candidate_extraction_isolates_outputs_without_mutating_matching_source(
     assert candidates[0].source_path != source
     assert candidates[0].source_path.parent.parent == output
     assert source.read_bytes() == source_before
+    assert source.stat().st_mtime_ns == source_mtime_ns
 
 
 @pytest.mark.parametrize("result, width, expected", [

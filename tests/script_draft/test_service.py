@@ -49,7 +49,7 @@ class Collaborators:
         self.interval_calls += 1
         image = work / "interval-frames" / "frame-000001.png"
         _png(image)
-        return [FrameCandidate(1_050, image, "interval")]
+        return [FrameCandidate(0, image, "interval")]
 
     def render(self, outputs: Path, info: VideoInfo, merged):
         self.render_calls += 1
@@ -120,6 +120,53 @@ def test_resume_reuses_valid_steps_and_reruns_first_invalid_step_and_later_steps
     assert collaborators.scene_calls == 1
     assert collaborators.interval_calls == 2
     assert collaborators.render_calls == 2
+
+
+@pytest.mark.parametrize("times", ((), (5_000,), (0, 0)))
+def test_resume_rejects_invalid_persisted_interval_candidates(tmp_path: Path, times: tuple[int, ...]):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source))
+    state_path = job_dir / "work" / "interval-frames" / "candidates.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["candidates"] = [
+        {**state["candidates"][0], "time_ms": time}
+        for time in times
+    ]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+
+    service.resume(job_dir)
+
+    assert collaborators.interval_calls == 2
+
+
+def test_resume_rejects_a_work_directory_redirected_outside_the_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source))
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+    work = job_dir / "work"
+    redirected = tmp_path / "redirected-work"
+    redirected.mkdir()
+    original_resolve = type(job_dir).resolve
+
+    def resolve_redirected_work(path: Path, *args, **kwargs) -> Path:
+        resolved = original_resolve(path, *args, **kwargs)
+        return redirected if resolved == work else resolved
+
+    monkeypatch.setattr(type(job_dir), "resolve", resolve_redirected_work)
+
+    with pytest.raises(ScriptDraftFailed, match="^input validation$"):
+        service.resume(job_dir)
+
+    assert not (redirected / "video-info.json").exists()
 
 
 def test_changed_source_is_rejected_before_process_calls_and_error_is_content_free(tmp_path: Path):

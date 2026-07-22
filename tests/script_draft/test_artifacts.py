@@ -261,3 +261,38 @@ def test_artifacts_valid_requires_every_expected_fingerprint_and_markdown_link(t
 
     records = JobStore().load(job_dir, recover_interrupted=False).artifacts
     assert all(isinstance(record, ArtifactRecord) for record in records)
+
+
+def test_artifacts_valid_requires_exact_indexed_png_files_and_manifest_records(tmp_path: Path):
+    job_dir = JobStore().create(tmp_path, "draft", mode=JobMode.SCRIPT_DRAFT)
+    source = job_dir / "work" / "frame.png"
+    _png(source)
+    render_artifacts(job_dir / "outputs", VideoInfo(5_000, 1280, 720), [
+        (FrameCandidate(0, source, "interval"), ("interval",)),
+    ])
+    _record_rendered_artifacts(job_dir)
+
+    assert artifacts_valid(job_dir)
+
+    extra_frame = job_dir / "outputs" / "frames" / "frame-9999.png"
+    _png(extra_frame)
+    assert not artifacts_valid(job_dir)
+    extra_frame.unlink()
+
+    (job_dir / "outputs" / "frames" / "frame-0001.png").unlink()
+    assert not artifacts_valid(job_dir)
+
+
+def test_artifacts_valid_rejects_unindexed_manifest_artifact_record(tmp_path: Path):
+    job_dir = JobStore().create(tmp_path, "draft", mode=JobMode.SCRIPT_DRAFT)
+    source = job_dir / "work" / "frame.png"
+    _png(source)
+    render_artifacts(job_dir / "outputs", VideoInfo(5_000, 1280, 720), [
+        (FrameCandidate(0, source, "interval"), ("interval",)),
+    ])
+    _record_rendered_artifacts(job_dir)
+    JobStore().update(job_dir, lambda manifest: manifest.artifacts.append(ArtifactRecord(
+        kind="frame-png", path="outputs/frames/unindexed.png", size=0, sha256="0" * 64,
+    )))
+
+    assert not artifacts_valid(job_dir)
