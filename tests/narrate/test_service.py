@@ -26,6 +26,7 @@ class Fakes:
         self.font: Path | None = None
         self.synthesis_error: Exception | None = None
         self.parsed: tuple[Utterance, ...] | None = None
+        self.destinations: list[Path] = []
 
     def probe(self, _: Path) -> VideoInfo:
         self.calls.append("probe")
@@ -65,6 +66,7 @@ class Fakes:
 
     def concat(self, wavs, destination: Path, *, silence_ms: int, cancel_event=None) -> WavInfo:
         self.calls.append("concat")
+        self.destinations.append(destination)
         if self.cancel_concat:
             raise ProcessCancelledError("private FFmpeg command")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -73,12 +75,14 @@ class Fakes:
 
     def subtitles(self, output: Path, cues):
         self.calls.append("subtitles")
+        self.destinations.extend([output / "subtitles.srt", output / "subtitles.vtt"])
         (output / "subtitles.srt").write_text("srt", encoding="utf-8")
         (output / "subtitles.vtt").write_text("vtt", encoding="utf-8")
         return output / "subtitles.srt", output / "subtitles.vtt"
 
     def preview(self, source, narration, subtitles, target, video, narration_ms, *, font=None, cancel_event=None):
         self.calls.append("preview")
+        self.destinations.append(target)
         target.write_bytes(b"preview")
         return target
 
@@ -284,6 +288,58 @@ def test_tampered_but_valid_staged_wav_is_not_reused_or_promoted(tmp_path: Path)
 
     assert fake.calls.count("synthesize") == before + 1
     assert (job_dir / "outputs" / "utterances" / "utterance-0001.wav").read_bytes() == b"fake wav"
+
+
+def test_resume_does_not_skip_completed_synthesis_with_a_tampered_work_wav(tmp_path: Path):
+    fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+    staged = job_dir / "work" / "utterances" / "utterance-0001.wav"
+    staged.unlink(); staged.write_bytes(b"valid-looking changed work wav")
+    syntheses, concats = fake.calls.count("synthesize"), fake.calls.count("concat")
+
+    service.resume(job_dir)
+
+    assert fake.calls.count("synthesize") == syntheses + 1
+    assert fake.calls.count("concat") == concats + 1
+    assert staged.read_bytes() == b"fake wav"
+
+
+@pytest.mark.parametrize("preview,target", [(False, "subtitles.srt"), (True, "preview.mp4")])
+def test_resume_rejects_tampered_render_artifacts_despite_permissive_collaborator_validation(tmp_path: Path, preview: bool, target: str):
+    from minoru_studio.narrate.service import NarrateFailed
+    request = _request(tmp_path, preview=preview); fake = Fakes()
+    if preview:
+        fake.font = tmp_path / "YuGothR.ttc"; fake.font.write_bytes(b"font")
+    service = _service(fake); job_dir = service.create_and_run(request)
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+    altered = job_dir / "outputs" / target; altered.write_bytes(b"tampered render artifact")
+
+    with pytest.raises(NarrateFailed, match="^output validation:"):
+        service.resume(job_dir)
+    assert altered.read_bytes() == b"tampered render artifact"
+
+
+@pytest.mark.parametrize("step,target,call", [
+    ("concat-audio", "narration.wav", "concat"),
+    ("render-artifacts", "subtitles.srt", "subtitles"),
+    ("render-preview", "preview.mp4", "preview"),
+])
+def test_existing_final_output_is_rejected_before_its_collaborator_can_overwrite_it(tmp_path: Path, step: str, target: str, call: str):
+    from minoru_studio.narrate.service import NarrateFailed
+    preview = step == "render-preview"; request = _request(tmp_path, preview=preview); fake = Fakes()
+    if preview:
+        fake.font = tmp_path / "YuGothR.ttc"; fake.font.write_bytes(b"font")
+    service = _service(fake); job_dir = service.create_and_run(request)
+    JobStore().update(job_dir, lambda manifest: (setattr(manifest, "status", JobStatus.FAILED), setattr(manifest.steps[step], "status", StepStatus.INTERRUPTED)))
+    protected = job_dir / "outputs" / target; protected.write_bytes(b"protected output")
+    before = fake.calls.count(call)
+
+    with pytest.raises(NarrateFailed, match="^output validation:"):
+        service.resume(job_dir)
+
+    assert protected.read_bytes() == b"protected output"
+    assert fake.calls.count(call) == before + 1
+    assert protected not in fake.destinations
 
 
 def test_concat_reinspects_its_published_output_before_marking_success(tmp_path: Path):

@@ -185,7 +185,8 @@ class NarrateService:
                 os.link(path, output)
             except FileExistsError:
                 try:
-                    if not os.path.samefile(path, output):
+                    equivalent = os.path.samefile(path, output) or fingerprint_file(path).sha256 == fingerprint_file(output).sha256
+                    if not equivalent:
                         raise _OutputInvalid()
                 except OSError as exc:
                     raise _OutputInvalid() from exc
@@ -194,32 +195,49 @@ class NarrateService:
 
     def _concat_step(self, job: Path, context: dict[str, Any], cancel_event: object | None) -> None:
         wavs = self._staged_wavs(job, self._require_utterances(context))
-        reported = self._concat(wavs, job / "outputs" / "narration.wav", silence_ms=300, cancel_event=cancel_event)
-        if not isinstance(reported, WavInfo): raise _InputInvalid()
-        context["narration"] = self._inspect_wav(job / "outputs" / "narration.wav")
-        if not isinstance(context["narration"], WavInfo): raise _InputInvalid()
-        self._record(job, [fingerprint_artifact(job, job / "outputs" / "narration.wav", "narration-wav")])
+        destination = job / "outputs" / "narration.wav"
+        staged = self._temporary_work_path(job, ".narration.wav")
+        try:
+            reported = self._concat(wavs, staged, silence_ms=300, cancel_event=cancel_event)
+            if not isinstance(reported, WavInfo) or not isinstance(self._inspect_wav(staged), WavInfo): raise _InputInvalid()
+            self._publish_output(job, staged, destination, "narration-wav")
+            context["narration"] = self._inspect_wav(destination)
+            if not isinstance(context["narration"], WavInfo): raise _InputInvalid()
+            self._record(job, [fingerprint_artifact(job, destination, "narration-wav")])
+        finally:
+            staged.unlink(missing_ok=True)
 
     def _artifacts_step(self, job: Path, context: dict[str, Any]) -> None:
         utterances = self._require_utterances(context); wavs = [(path, self._inspect_wav(path)) for path in self._staged_wavs(job, utterances)]
         cues = build_timeline(utterances, wavs, silence_ms=300); narration = self._inspect_wav(job / "outputs" / "narration.wav")
         expected = sum((info.duration_seconds for _, info in wavs), Decimal(0)) + Decimal("0.3") * (len(wavs) - 1)
         if abs(self._ms(narration.duration_seconds) - self._ms(expected)) > 1: raise _InputInvalid()
-        srt, vtt = self._subtitles(job / "outputs", cues)
-        if tuple(map(Path, (srt, vtt))) != (job / "outputs" / "subtitles.srt", job / "outputs" / "subtitles.vtt"): raise _InputInvalid()
+        staged_dir = job / "work" / f".artifacts-{uuid4().hex}"; staged_dir.mkdir()
+        try:
+            srt, vtt = self._subtitles(staged_dir, cues)
+            if tuple(map(Path, (srt, vtt))) != (staged_dir / "subtitles.srt", staged_dir / "subtitles.vtt"): raise _InputInvalid()
+            final_srt, final_vtt = job / "outputs" / "subtitles.srt", job / "outputs" / "subtitles.vtt"
+            self._publish_output(job, srt, final_srt, "subtitles-srt"); self._publish_output(job, vtt, final_vtt, "subtitles-vtt")
+        finally:
+            for path in staged_dir.glob("*"): path.unlink(missing_ok=True)
+            staged_dir.rmdir()
         video = self._require_video(context); warning = job / "work" / "duration-warning.json"
         if self._ms(narration.duration_seconds) > video.duration_ms: self._write_json(warning, {"source_duration_ms": video.duration_ms, "narration_duration_ms": self._ms(narration.duration_seconds)})
         else: warning.unlink(missing_ok=True)
-        self._record(job, [fingerprint_artifact(job, srt, "subtitles-srt"), fingerprint_artifact(job, vtt, "subtitles-vtt")])
+        self._record(job, [fingerprint_artifact(job, final_srt, "subtitles-srt"), fingerprint_artifact(job, final_vtt, "subtitles-vtt")])
 
     def _preview_step(self, job: Path, request: NarrateRequest, context: dict[str, Any], cancel_event: object | None) -> None:
-        narration = self._inspect_wav(job / "outputs" / "narration.wav"); target = job / "outputs" / "preview.mp4"
-        self._preview_renderer(request.input_path, job / "outputs" / "narration.wav", job / "outputs" / "subtitles.srt", target, self._require_video(context), self._ms(narration.duration_seconds), font=context.get("font"), cancel_event=cancel_event)
+        narration = self._inspect_wav(job / "outputs" / "narration.wav"); target = job / "outputs" / "preview.mp4"; staged = self._temporary_work_path(job, ".preview.mp4")
+        try:
+            self._preview_renderer(request.input_path, job / "outputs" / "narration.wav", job / "outputs" / "subtitles.srt", staged, self._require_video(context), self._ms(narration.duration_seconds), font=context.get("font"), cancel_event=cancel_event)
+            self._publish_output(job, staged, target, "preview-mp4")
+        finally:
+            staged.unlink(missing_ok=True)
         self._record(job, [fingerprint_artifact(job, target, "preview-mp4")])
 
     def _reconcile(self, job: Path, request: NarrateRequest) -> tuple[dict[str, Any], int]:
         self._safe_roots(job); context: dict[str, Any] = {}; steps = self._steps(request.preview); manifest = self._store.load(job, recover_interrupted=False)
-        validators = {"probe-input": lambda: self._load_video(job, context, request.preview), "parse-script": lambda: self._load_utterances(job, context), "synthesize-utterances": lambda: self._load_synthesis(job, context), "concat-audio": lambda: self._valid_wav(job / "outputs" / "narration.wav") and self._artifact_valid(job, job / "outputs" / "narration.wav", "narration-wav"), "render-artifacts": lambda: self._artifacts_validator(job, include_preview=False), "render-preview": lambda: self._artifacts_validator(job, include_preview=True)}
+        validators = {"probe-input": lambda: self._load_video(job, context, request.preview), "parse-script": lambda: self._load_utterances(job, context), "synthesize-utterances": lambda: self._load_synthesis(job, context), "concat-audio": lambda: self._valid_wav(job / "outputs" / "narration.wav") and self._artifact_valid(job, job / "outputs" / "narration.wav", "narration-wav"), "render-artifacts": lambda: self._render_artifacts_valid(job), "render-preview": lambda: self._preview_artifact_valid(job)}
         for index, name in enumerate(steps):
             record = manifest.steps.get(name)
             valid = validators[name]()
@@ -278,7 +296,7 @@ class NarrateService:
             utterances = self._require_utterances(context); data = self._provenance_payload(job)
             if data is None or not self._state_fingerprint_valid(job, job / "work" / "voicevox-provenance.json", "narrate-voicevox-provenance-sha256"): return False
             if not self._provenance_reusable(data, self._load_provenance(job), context["script_sha256"], utterances): return False
-            return all(self._valid_wav(path) and self._artifact_valid(job, job / "outputs" / "utterances" / path.name, "utterance-wav") for path in self._staged_wavs(job, utterances))
+            return all(self._staged_hash_matches(data, utterance.index, path) and self._valid_wav(path) and self._artifact_valid(job, job / "outputs" / "utterances" / path.name, "utterance-wav") for utterance, path in zip(utterances, self._staged_wavs(job, utterances), strict=True))
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError): return False
 
     def _load_provenance(self, job: Path) -> VoicevoxProvenance | None:
@@ -329,6 +347,22 @@ class NarrateService:
             return len(records) == 1 and fingerprint_artifact(job, path, kind) == records[0]
         except (OSError, ValueError):
             return False
+
+    def _render_artifacts_valid(self, job: Path) -> bool:
+        return self._artifacts_validator(job, include_preview=False) and self._artifact_valid(job, job / "outputs" / "subtitles.srt", "subtitles-srt") and self._artifact_valid(job, job / "outputs" / "subtitles.vtt", "subtitles-vtt")
+
+    def _preview_artifact_valid(self, job: Path) -> bool:
+        return self._artifacts_validator(job, include_preview=True) and self._render_artifacts_valid(job) and self._artifact_valid(job, job / "outputs" / "preview.mp4", "preview-mp4")
+
+    def _publish_output(self, job: Path, staged: Path, destination: Path, kind: str) -> None:
+        try:
+            os.link(staged, destination)
+        except FileExistsError:
+            try:
+                unchanged = fingerprint_file(staged).sha256 == fingerprint_file(destination).sha256
+            except (OSError, ValueError):
+                unchanged = False
+            if not unchanged and not self._artifact_valid(job, destination, kind): raise _OutputInvalid() from None
 
     def _invalid_producing_output(self, job: Path, name: str, context: dict[str, Any]) -> bool:
         if name == "synthesize-utterances":
@@ -404,6 +438,12 @@ class NarrateService:
         path.parent.mkdir(parents=True, exist_ok=True); temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try: temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"); os.replace(temporary, path)
         finally: temporary.unlink(missing_ok=True)
+    @staticmethod
+    def _require_absent(*paths: Path) -> None:
+        if any(path.exists() for path in paths): raise _OutputInvalid()
+    @staticmethod
+    def _temporary_work_path(job: Path, suffix: str) -> Path:
+        return job / "work" / f".{uuid4().hex}{suffix}"
     @staticmethod
     def _safe_roots(job: Path) -> None:
         root = Path(job).resolve(strict=True)
