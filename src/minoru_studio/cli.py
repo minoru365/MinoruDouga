@@ -22,6 +22,7 @@ from minoru_studio.script_draft.commands import (
     _ScriptDraftCreateOptionAction,
     script_draft_command,
 )
+from minoru_studio.narrate.commands import _NarrateCreateOptionAction, narrate_command
 
 
 def launch_gui() -> None:
@@ -182,6 +183,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     script_draft_parser.add_argument(
         "-OutputDir", "--output-dir", dest="output_dir", action=_ScriptDraftCreateOptionAction,
+    )
+
+    narrate_parser = subparsers.add_parser(
+        "narrate",
+        help="create or resume a local narration job",
+        description=(
+            "create: INPUT_PATH -Script SCRIPT_PATH -Name NAME -OutputDir OUTPUT_DIR [-Preview]\n"
+            "resume: resume JOB_DIR"
+        ),
+    )
+    narrate_parser.set_defaults(
+        handler=narrate_command,
+        command_parser=narrate_parser,
+        _narrate_create_options=frozenset(),
+    )
+    narrate_parser.add_argument("input_or_action", metavar="INPUT_PATH | resume")
+    narrate_parser.add_argument("resume_job", nargs="?", metavar="JOB_DIR")
+    narrate_parser.add_argument("-Script", "--script", dest="script", action=_NarrateCreateOptionAction)
+    narrate_parser.add_argument("-Name", "--name", dest="name", action=_NarrateCreateOptionAction)
+    narrate_parser.add_argument("-OutputDir", "--output-dir", dest="output_dir", action=_NarrateCreateOptionAction)
+    narrate_parser.add_argument(
+        "-Preview", "--preview", action=_NarrateCreateOptionAction,
+        nargs=0, const=True, default=False,
     )
     return parser
 

@@ -40,3 +40,18 @@ def test_script_draft_help_explains_create_resume_and_limited_options(capsys):
     assert "-OutputDir" in output
     assert "-Model" not in output
     assert "-Language" not in output
+
+
+def test_narrate_help_explains_create_resume_and_limited_options(capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["narrate", "--help"])
+
+    assert raised.value.code == 0
+    output = capsys.readouterr().out
+    assert "create" in output
+    assert "resume" in output
+    assert "-Script" in output
+    assert "-Name" in output
+    assert "-OutputDir" in output
+    assert "-Preview" in output
+    assert "-Model" not in output
