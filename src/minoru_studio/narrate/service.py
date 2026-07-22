@@ -142,7 +142,7 @@ class NarrateService:
             except Exception as exc: raise _InputInvalid() from exc
             if not is_supported_japanese_font(font): raise _InputInvalid()
             ref = fingerprint_file(font.file.resolve(strict=True)); payload["preview_font"] = {"family": font.family, "path": ref.path, "sha256": ref.sha256, "size": ref.size, "mtime_ns": ref.mtime_ns}; context["font"] = font
-        self._write_json(job / "work" / "video-info.json", payload)
+        self._write_json(job, job / "work" / "video-info.json", payload)
         versions = self._tool_versions(); ffmpeg, ffprobe = getattr(versions, "ffmpeg", None), getattr(versions, "ffprobe", None)
         if not self._nonblank(ffmpeg) or not self._nonblank(ffprobe): raise _InputInvalid()
         self._store.update(job, lambda manifest: manifest.tools.update({"ffmpeg": ffmpeg, "ffprobe": ffprobe, "narrate-video-info-sha256": fingerprint_file(job / "work" / "video-info.json").sha256}))
@@ -155,7 +155,7 @@ class NarrateService:
         if not snapshot_valid(snapshot, expected.sha256): raise _InputInvalid()
         utterances = self._parse(snapshot)
         if not self._valid_utterances(utterances): raise _InputInvalid()
-        self._write_json(job / "work" / "utterances.json", {"script_sha256": expected.sha256, "utterances": [asdict(item) for item in utterances]})
+        self._write_json(job, job / "work" / "utterances.json", {"script_sha256": expected.sha256, "utterances": [asdict(item) for item in utterances]})
         self._store.update(job, lambda manifest: manifest.tools.__setitem__("narrate-utterances-sha256", fingerprint_file(job / "work" / "utterances.json").sha256))
         context["utterances"] = utterances; context["script_sha256"] = expected.sha256
 
@@ -177,7 +177,7 @@ class NarrateService:
                 self._publish_wav(self._voicevox.synthesize(utterance.text, provenance.speaker_id, cancel_event=cancel_event), path)
             if not self._valid_wav(path): raise VoicevoxSynthesisError()
             staged.append(path)
-        self._write_json(job / "work" / "voicevox-provenance.json", {**asdict(provenance), "script_sha256": script_hash, "utterance_indices": [item.index for item in utterances], "staged_wavs": [{"index": path_index, "sha256": fingerprint_file(path).sha256} for path_index, path in enumerate(staged, 1)]})
+        self._write_json(job, job / "work" / "voicevox-provenance.json", {**asdict(provenance), "script_sha256": script_hash, "utterance_indices": [item.index for item in utterances], "staged_wavs": [{"index": path_index, "sha256": fingerprint_file(path).sha256} for path_index, path in enumerate(staged, 1)]})
         self._store.update(job, lambda manifest: manifest.tools.__setitem__("narrate-voicevox-provenance-sha256", fingerprint_file(job / "work" / "voicevox-provenance.json").sha256))
         records: list[ArtifactRecord] = []
         for path in staged:
@@ -223,7 +223,7 @@ class NarrateService:
             for path in staged_dir.glob("*"): path.unlink(missing_ok=True)
             staged_dir.rmdir()
         video = self._require_video(context); warning = job / "work" / "duration-warning.json"; self._safe_target(job, warning, "work")
-        if self._ms(narration.duration_seconds) > video.duration_ms: self._write_json(warning, {"source_duration_ms": video.duration_ms, "narration_duration_ms": self._ms(narration.duration_seconds)})
+        if self._ms(narration.duration_seconds) > video.duration_ms: self._write_json(job, warning, {"source_duration_ms": video.duration_ms, "narration_duration_ms": self._ms(narration.duration_seconds)})
         else: warning.unlink(missing_ok=True)
         self._record(job, [fingerprint_artifact(job, final_srt, "subtitles-srt"), fingerprint_artifact(job, final_vtt, "subtitles-vtt")])
 
@@ -438,9 +438,9 @@ class NarrateService:
         paths = [job / "work" / "utterances" / f"utterance-{item.index:04d}.wav" for item in utterances]
         for path in paths: self._safe_target(job, path, "work")
         return paths
-    @staticmethod
-    def _write_json(path: Path, payload: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True); temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    def _write_json(self, job: Path, path: Path, payload: dict[str, Any]) -> None:
+        self._safe_target(job, path, "work"); temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp"); self._safe_target(job, temporary, "work")
+        path.parent.mkdir(parents=True, exist_ok=True)
         try: temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"); os.replace(temporary, path)
         finally: temporary.unlink(missing_ok=True)
     @staticmethod
@@ -459,7 +459,8 @@ class NarrateService:
         root = (Path(job) / root_name).resolve(strict=True)
         candidate = Path(path)
         parent = candidate.parent.resolve(strict=False)
-        if not parent.is_relative_to(root): raise _UnsafePath()
+        resolved_candidate = candidate.resolve(strict=False)
+        if not parent.is_relative_to(root) or not resolved_candidate.is_relative_to(root): raise _UnsafePath()
         if candidate.exists() and not candidate.resolve(strict=True).is_relative_to(root): raise _UnsafePath()
     def _script_ref(self, job: Path) -> InputRef:
         manifest = self._store.load(job, recover_interrupted=False)

@@ -434,6 +434,22 @@ def test_resume_rejects_nested_alias_before_any_external_write_or_delete(tmp_pat
     assert marker.read_bytes() == b"keep"
 
 
+def test_work_state_json_write_rejects_an_aliased_final_or_temporary_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from minoru_studio.narrate.service import NarrateFailed
+    request = _request(tmp_path); fake = Fakes(); outside = tmp_path / "outside-json"; outside.mkdir(); marker = outside / "marker"; marker.write_bytes(b"keep")
+    target = request.output_dir / "narration.media-job" / "work" / "video-info.json"; original = type(target).resolve
+    def redirect(path: Path, *args, **kwargs):
+        resolved = original(path, *args, **kwargs)
+        return outside if resolved == target or resolved.name.startswith(".video-info.json.") else resolved
+    monkeypatch.setattr(type(target), "resolve", redirect)
+
+    with pytest.raises(NarrateFailed, match="^input validation:"):
+        _service(fake).create_and_run(request)
+    assert marker.read_bytes() == b"keep"
+    assert not target.exists()
+    assert not (outside / "video-info.json").exists()
+
+
 def test_tampered_successful_final_output_is_rejected_without_overwrite_or_delete(tmp_path: Path):
     from minoru_studio.narrate.service import NarrateFailed
     fake = Fakes(); service = _service(fake); job_dir = service.create_and_run(_request(tmp_path))
