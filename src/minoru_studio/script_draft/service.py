@@ -401,9 +401,11 @@ class ScriptDraftService:
     @staticmethod
     def _contained_job_paths(job_dir: Path) -> tuple[Path, Path, Path]:
         root = Path(job_dir).resolve(strict=True)
-        work = (root / "work").resolve(strict=True)
-        outputs = (root / "outputs").resolve(strict=True)
-        if not work.is_relative_to(root) or not outputs.is_relative_to(root):
+        intended_work = root / "work"
+        intended_outputs = root / "outputs"
+        work = intended_work.resolve(strict=True)
+        outputs = intended_outputs.resolve(strict=True)
+        if work != intended_work or outputs != intended_outputs or work == outputs:
             raise _InputInvalid("job state path is outside job")
         return root, work, outputs
 

@@ -169,6 +169,39 @@ def test_resume_rejects_a_work_directory_redirected_outside_the_job(
     assert not (redirected / "video-info.json").exists()
 
 
+def test_resume_rejects_an_in_job_output_alias_before_clear_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    collaborators = Collaborators()
+    service = _service(tmp_path, collaborators)
+    job_dir = service.create_and_run(_request(tmp_path, source))
+    JobStore().update(job_dir, lambda manifest: setattr(manifest, "status", JobStatus.FAILED))
+    output_dir = job_dir / "outputs"
+    original_resolve = type(job_dir).resolve
+    clear_calls: list[Path] = []
+
+    def resolve_output_to_job_root(path: Path, *args, **kwargs) -> Path:
+        resolved = original_resolve(path, *args, **kwargs)
+        return job_dir if resolved == output_dir else resolved
+
+    def clear_outputs(job: Path) -> None:
+        clear_calls.append(job)
+        raise AssertionError("output clearing must not run for an alias")
+
+    monkeypatch.setattr(type(job_dir), "resolve", resolve_output_to_job_root)
+    monkeypatch.setattr(service, "_clear_outputs", clear_outputs)
+
+    with pytest.raises(ScriptDraftFailed, match="^input validation$"):
+        service.resume(job_dir)
+
+    assert clear_calls == []
+    assert (job_dir / "job.json").is_file()
+    assert (job_dir / "work" / "video-info.json").is_file()
+    assert (job_dir / "outputs" / "script.md").is_file()
+
+
 def test_changed_source_is_rejected_before_process_calls_and_error_is_content_free(tmp_path: Path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
