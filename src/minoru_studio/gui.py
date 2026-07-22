@@ -14,6 +14,18 @@ from minoru_studio.beat_sync.settings import (
 )
 from minoru_studio.jobs.model import JobManifest, JobMode
 from minoru_studio.jobs.store import JobStore
+from minoru_studio.script_draft.gui_state import ScriptDraftFormValues
+from minoru_studio.script_draft.service import (
+    ScriptDraftFailed,
+    ScriptDraftInterrupted,
+    ScriptDraftService,
+)
+from minoru_studio.script_draft.settings import (
+    load_settings as load_script_draft_settings,
+)
+from minoru_studio.script_draft.settings import (
+    save_settings as save_script_draft_settings,
+)
 from minoru_studio.transcribe.gui_state import (
     TranscribeFormValues,
     model_prompt,
@@ -39,6 +51,7 @@ class LauncherController:
         store: JobStore | None = None,
         beat_sync_service: BeatSyncService | None = None,
         transcribe_service: TranscribeService | None = None,
+        script_draft_service: ScriptDraftService | None = None,
     ):
         self.store = store or JobStore()
         self.beat_sync_service = (
@@ -46,6 +59,9 @@ class LauncherController:
         )
         self.transcribe_service = (
             transcribe_service if transcribe_service is not None else TranscribeService()
+        )
+        self.script_draft_service = (
+            script_draft_service if script_draft_service is not None else ScriptDraftService()
         )
 
     def create_job(self, mode: str, name: str, output_dir: str) -> Path:
@@ -130,6 +146,38 @@ class LauncherController:
     def transcription_model_prompt(self, model):
         return model_prompt(model)
 
+    def prepare_script_draft(
+        self,
+        *,
+        input_path,
+        name,
+        output_dir,
+        cancel_event=None,
+        progress=None,
+    ):
+        return self.script_draft_service.create_and_run(
+            ScriptDraftFormValues(
+                input_path=input_path,
+                name=name,
+                output_dir=output_dir,
+            ).to_request(),
+            cancel_event=cancel_event,
+            progress=progress,
+        )
+
+    def resume_script_draft(
+        self,
+        job_dir,
+        *,
+        cancel_event=None,
+        progress=None,
+    ):
+        return self.script_draft_service.resume(
+            Path(job_dir),
+            cancel_event=cancel_event,
+            progress=progress,
+        )
+
 
 def launch_gui(controller: LauncherController | None = None) -> None:
     if controller is None:
@@ -144,6 +192,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
 
     saved = load_beat_sync_settings()
     saved_transcribe = load_transcribe_settings()
+    saved_script_draft = load_script_draft_settings()
     saved_every_n = saved.get("every_n", "auto")
     if saved_every_n != "auto":
         try:
@@ -176,6 +225,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     transcribe_normalize_var = tk.BooleanVar(value=bool(saved_transcribe.get("normalize", False)))
     transcribe_denoise_var = tk.BooleanVar(value=bool(saved_transcribe.get("denoise", False)))
     transcribe_preview_var = tk.BooleanVar(value=bool(saved_transcribe.get("preview", False)))
+    script_draft_input_var = tk.StringVar(value=saved_script_draft.get("input", ""))
     status_var = tk.StringVar(value="新しいジョブを作成するか、既存ジョブを開いてください。")
     mode_defaults = {
         JobMode.BEAT_SYNC.value: {
@@ -185,6 +235,10 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         JobMode.TRANSCRIBE.value: {
             "name": saved_transcribe.get("name", "transcribe-job"),
             "output_dir": saved_transcribe.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+        },
+        JobMode.SCRIPT_DRAFT.value: {
+            "name": saved_script_draft.get("name", "script-draft-job"),
+            "output_dir": saved_script_draft.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
         },
     }
 
@@ -351,6 +405,35 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     transcribe_preview_check = ttk.Checkbutton(transcribe_frame, text="字幕付きプレビューを作成", variable=transcribe_preview_var)
     transcribe_preview_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
 
+    script_draft_frame = ttk.LabelFrame(frame, text="台本下書き", padding=12)
+    script_draft_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(14, 4))
+    script_draft_frame.columnconfigure(1, weight=1)
+    ttk.Label(script_draft_frame, text="入力動画").grid(row=0, column=0, sticky="w")
+    script_draft_input_entry = ttk.Entry(
+        script_draft_frame,
+        textvariable=script_draft_input_var,
+        width=48,
+    )
+    script_draft_input_entry.grid(row=0, column=1, sticky="ew", pady=4)
+
+    def choose_script_draft_input() -> None:
+        selected = filedialog.askopenfilename(
+            title="台本下書きする動画を選択",
+            filetypes=(
+                ("Video", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
+                ("All files", "*.*"),
+            ),
+        )
+        if selected:
+            script_draft_input_var.set(selected)
+
+    script_draft_input_button = ttk.Button(
+        script_draft_frame,
+        text="選択",
+        command=choose_script_draft_input,
+    )
+    script_draft_input_button.grid(row=0, column=2, padx=4)
+
     def create_job() -> None:
         if active_cancel_event is not None:
             return
@@ -371,10 +454,13 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     current_transcribe_job: Path | None = None
     current_transcribe_model: str | None = None
     completed_transcribe_inspection = False
+    current_script_draft_job: Path | None = None
+    completed_script_draft_inspection = False
     active_cancel_event: threading.Event | None = None
 
     def open_job() -> None:
         nonlocal current_transcribe_job, current_transcribe_model, completed_transcribe_inspection
+        nonlocal current_script_draft_job, completed_script_draft_inspection
         if active_cancel_event is not None:
             return
         selected = filedialog.askdirectory(title=".media-job を選択")
@@ -409,6 +495,19 @@ def launch_gui(controller: LauncherController | None = None) -> None:
                 completed_transcribe_inspection = True
                 transcribe_button.configure(text="完了済みジョブ（確認のみ）")
                 transcribe_button.state(["disabled"])
+            update_mode_fields()
+        elif manifest.mode is JobMode.SCRIPT_DRAFT:
+            mode_var.set(JobMode.SCRIPT_DRAFT.value)
+            if manifest.status.value in {"failed", "interrupted"}:
+                current_script_draft_job = Path(selected)
+                completed_script_draft_inspection = False
+                script_draft_button.configure(text="台本下書きを再開")
+                script_draft_button.state(["!disabled"])
+            elif manifest.status.value == "succeeded":
+                current_script_draft_job = None
+                completed_script_draft_inspection = True
+                script_draft_button.configure(text="完了済みジョブ（確認のみ）")
+                script_draft_button.state(["disabled"])
             update_mode_fields()
 
     def finish_error(message: str) -> None:
@@ -599,6 +698,108 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             active_cancel_event.set()
             status_var.set("キャンセル中…")
 
+    def script_draft_values() -> ScriptDraftFormValues:
+        return ScriptDraftFormValues(
+            input_path=script_draft_input_var.get(),
+            name=name_var.get(),
+            output_dir=output_var.get(),
+        )
+
+    def set_script_draft_mutable(enabled: bool) -> None:
+        state = ["!disabled"] if enabled else ["disabled"]
+        for widget in (
+            script_draft_input_entry,
+            script_draft_input_button,
+            script_draft_button,
+            mode_box,
+            name_entry,
+            output_entry,
+            output_button,
+            prepare_button,
+            create_button,
+            open_button,
+        ):
+            widget.state(state)
+        script_draft_cancel_button.state(["disabled"] if enabled else ["!disabled"])
+
+    def finish_script_draft_success(job_dir: Path) -> None:
+        nonlocal active_cancel_event, current_script_draft_job
+        active_cancel_event = None
+        current_script_draft_job = None
+        set_script_draft_mutable(True)
+        script_draft_button.configure(text="台本下書きを開始")
+        status_var.set(f"台本下書き完了: {Path(job_dir).resolve()}")
+
+    def finish_script_draft_error(category: str, interrupted: bool = False) -> None:
+        nonlocal active_cancel_event
+        active_cancel_event = None
+        set_script_draft_mutable(True)
+        status_var.set(
+            "台本下書きを中断しました"
+            if interrupted
+            else f"台本下書き失敗: {category}"
+        )
+        if not interrupted:
+            messagebox.showerror("台本下書き失敗", category, parent=root)
+
+    def start_or_resume_script_draft() -> None:
+        nonlocal active_cancel_event
+        try:
+            selected_job = current_script_draft_job
+            if selected_job is None:
+                request = script_draft_values().to_request()
+                save_script_draft_settings(
+                    {
+                        "input": str(request.input_path),
+                        "name": request.name,
+                        "output_dir": str(request.output_dir),
+                    }
+                )
+            else:
+                request = None
+        except Exception:
+            finish_script_draft_error("input validation")
+            return
+
+        active_cancel_event = threading.Event()
+        cancel_event = active_cancel_event
+        set_script_draft_mutable(False)
+        status_var.set("台本下書きを開始しています…")
+
+        def progress(step: str) -> None:
+            root.after(0, lambda step=step: status_var.set(f"台本下書き: {step}"))
+
+        def worker() -> None:
+            try:
+                if selected_job is None:
+                    assert request is not None
+                    job_dir = controller.prepare_script_draft(
+                        input_path=str(request.input_path),
+                        name=request.name,
+                        output_dir=str(request.output_dir),
+                        cancel_event=cancel_event,
+                        progress=progress,
+                    )
+                else:
+                    job_dir = controller.resume_script_draft(
+                        selected_job,
+                        cancel_event=cancel_event,
+                        progress=progress,
+                    )
+            except ScriptDraftInterrupted:
+                root.after(0, lambda: finish_script_draft_error("", interrupted=True))
+            except ScriptDraftFailed as exc:
+                root.after(
+                    0,
+                    lambda category=exc.category: finish_script_draft_error(category),
+                )
+            except Exception:
+                root.after(0, lambda: finish_script_draft_error("execution failure"))
+            else:
+                root.after(0, lambda path=job_dir: finish_script_draft_success(path))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     transcribe_actions = ttk.Frame(transcribe_frame)
     transcribe_actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 0))
     transcribe_actions.columnconfigure(0, weight=1)
@@ -607,6 +808,23 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     cancel_button = ttk.Button(transcribe_actions, text="キャンセル", command=cancel_transcription)
     cancel_button.grid(row=0, column=1, sticky="ew")
     cancel_button.state(["disabled"])
+
+    script_draft_actions = ttk.Frame(script_draft_frame)
+    script_draft_actions.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+    script_draft_actions.columnconfigure(0, weight=1)
+    script_draft_button = ttk.Button(
+        script_draft_actions,
+        text="台本下書きを開始",
+        command=start_or_resume_script_draft,
+    )
+    script_draft_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+    script_draft_cancel_button = ttk.Button(
+        script_draft_actions,
+        text="キャンセル",
+        command=cancel_transcription,
+    )
+    script_draft_cancel_button.grid(row=0, column=1, sticky="ew")
+    script_draft_cancel_button.state(["disabled"])
 
     action_frame = ttk.Frame(frame)
     action_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(14, 8))
@@ -635,7 +853,8 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     displayed_mode = JobMode.BEAT_SYNC.value
 
     def update_mode_fields(event=None) -> None:
-        nonlocal current_transcribe_job, current_transcribe_model, completed_transcribe_inspection, displayed_mode
+        nonlocal current_transcribe_job, current_transcribe_model, completed_transcribe_inspection
+        nonlocal current_script_draft_job, completed_script_draft_inspection, displayed_mode
         if displayed_mode in mode_defaults:
             mode_defaults[displayed_mode] = {
                 "name": name_var.get(),
@@ -652,6 +871,15 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             completed_transcribe_inspection = False
             transcribe_button.configure(text="文字起こしを開始")
             transcribe_button.state(["!disabled"])
+        if (
+            selected_mode != JobMode.SCRIPT_DRAFT.value
+            and completed_script_draft_inspection
+            and active_cancel_event is None
+        ):
+            current_script_draft_job = None
+            completed_script_draft_inspection = False
+            script_draft_button.configure(text="台本下書きを開始")
+            script_draft_button.state(["!disabled"])
         if selected_mode in mode_defaults:
             name_var.set(mode_defaults[selected_mode]["name"])
             output_var.set(mode_defaults[selected_mode]["output_dir"])
@@ -659,16 +887,25 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         if mode_var.get() == JobMode.BEAT_SYNC.value:
             beat_frame.grid()
             transcribe_frame.grid_remove()
+            script_draft_frame.grid_remove()
             prepare_button.grid()
             create_button.grid_remove()
         elif mode_var.get() == JobMode.TRANSCRIBE.value:
             beat_frame.grid_remove()
             transcribe_frame.grid()
+            script_draft_frame.grid_remove()
+            prepare_button.grid_remove()
+            create_button.grid_remove()
+        elif mode_var.get() == JobMode.SCRIPT_DRAFT.value:
+            beat_frame.grid_remove()
+            transcribe_frame.grid_remove()
+            script_draft_frame.grid()
             prepare_button.grid_remove()
             create_button.grid_remove()
         else:
             beat_frame.grid_remove()
             transcribe_frame.grid_remove()
+            script_draft_frame.grid_remove()
             prepare_button.grid_remove()
             create_button.grid()
 
