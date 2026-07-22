@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -6,6 +7,7 @@ from minoru_studio import gui
 from minoru_studio.gui import LauncherController
 from minoru_studio.transcribe.gui_state import ModelPrompt
 from minoru_studio.jobs.model import JobMode, JobStatus
+from minoru_studio.narrate.models import DurationWarning
 
 
 def test_controller_creates_and_inspects_pending_job(tmp_path):
@@ -180,6 +182,44 @@ def test_controller_resumes_script_draft_and_keeps_falsy_injected_service(tmp_pa
         cancel_event=cancel,
     ) == tmp_path / "demo.media-job"
     assert calls[0][1]["cancel_event"] is cancel
+
+
+def test_controller_prepares_narration_forwards_callbacks_and_reads_warning(monkeypatch, tmp_path):
+    calls = []
+    events = []
+    warning = DurationWarning(1_000, 1_300)
+
+    class Service:
+        def create_and_run(self, request, **kwargs):
+            calls.append({"request": request, **kwargs})
+            kwargs["progress"]("synthesize-utterances")
+            return tmp_path / "demo.media-job"
+
+    monkeypatch.setattr(gui, "read_duration_warning", lambda job_dir: warning)
+    cancel = __import__("threading").Event()
+    controller = LauncherController(narrate_service=Service())
+
+    job_dir, result_warning = controller.prepare_narration(
+        input_path="input.mp4", script_path="script.md", name="demo",
+        output_dir=str(tmp_path), preview=True, cancel_event=cancel,
+        progress=events.append,
+    )
+
+    assert job_dir == tmp_path / "demo.media-job"
+    assert result_warning is warning
+    assert calls[0]["request"].script_path == Path("script.md")
+    assert calls[0]["request"].preview is True
+    assert calls[0]["cancel_event"] is cancel
+    assert events == ["synthesize-utterances"]
+
+
+def test_narration_progress_message_never_includes_untrusted_service_text():
+    untrusted = "# ナレーション\n秘密の台本テキスト"
+
+    message = gui._narration_progress_message(untrusted)
+
+    assert message == "ナレーション: 処理中…"
+    assert untrusted not in message
 
 
 def test_controller_builds_model_prompt_without_authorization_data(monkeypatch):

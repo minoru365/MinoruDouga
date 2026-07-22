@@ -26,7 +26,7 @@
 | `beat-sync` とResolveアダプター | 完了 | Resolve受入記録 |
 | `transcribe` のローカル文字起こし、TXT/SRT/VTT、任意preview | 完了 | 文字起こし受入記録 |
 | `script-draft` | 実装・機械確認済み。実動画のまとめて受入待ち | 総合設計 7.4 |
-| `narrate` | 未実装 | 総合設計 7.3、11.2 |
+| `narrate` | 実装・機械確認済み。VOICEVOX実音声・実previewのまとめて受入待ち | 総合設計 7.3、11.2 |
 | `repo-demo` のローカル工程 | 未実装 | 総合設計 7.5 |
 | `repo-demo -AI` | 未実装 | 総合設計 7.5、11.3 |
 | デモ組み立て | 未実装 | 総合設計 7.5 |

@@ -16,6 +16,15 @@ from minoru_studio.beat_sync.settings import (
 )
 from minoru_studio.jobs.model import JobManifest, JobMode
 from minoru_studio.jobs.store import JobStore
+from minoru_studio.narrate.artifacts import read_duration_warning
+from minoru_studio.narrate.gui_state import NarrateFormValues
+from minoru_studio.narrate.service import NarrateFailed, NarrateInterrupted, NarrateService
+from minoru_studio.narrate.settings import (
+    load_settings as load_narrate_settings,
+)
+from minoru_studio.narrate.settings import (
+    save_settings as save_narrate_settings,
+)
 from minoru_studio.script_draft.gui_state import ScriptDraftFormValues
 from minoru_studio.script_draft.service import (
     ScriptDraftFailed,
@@ -47,6 +56,21 @@ from minoru_studio.transcribe.settings import (
 )
 
 
+_NARRATION_PROGRESS_LABELS = {
+    "probe-input": "入力を確認中…",
+    "parse-script": "台本を確認中…",
+    "synthesize-utterances": "音声を生成中…",
+    "concat-audio": "音声を連結中…",
+    "render-artifacts": "字幕を作成中…",
+    "render-preview": "プレビューを作成中…",
+}
+
+
+def _narration_progress_message(step: object) -> str:
+    label = _NARRATION_PROGRESS_LABELS.get(step) if isinstance(step, str) else None
+    return f"ナレーション: {label or '処理中…'}"
+
+
 class LauncherController:
     def __init__(
         self,
@@ -54,6 +78,7 @@ class LauncherController:
         beat_sync_service: BeatSyncService | None = None,
         transcribe_service: TranscribeService | None = None,
         script_draft_service: ScriptDraftService | None = None,
+        narrate_service: NarrateService | None = None,
     ):
         self.store = store or JobStore()
         self.beat_sync_service = (
@@ -64,6 +89,9 @@ class LauncherController:
         )
         self.script_draft_service = (
             script_draft_service if script_draft_service is not None else ScriptDraftService()
+        )
+        self.narrate_service = (
+            narrate_service if narrate_service is not None else NarrateService()
         )
 
     def create_job(self, mode: str, name: str, output_dir: str) -> Path:
@@ -185,6 +213,36 @@ class LauncherController:
             progress=progress,
         )
 
+    def prepare_narration(
+        self,
+        *,
+        input_path,
+        script_path,
+        name,
+        output_dir,
+        preview,
+        cancel_event=None,
+        progress=None,
+    ):
+        job_dir = self.narrate_service.create_and_run(
+            NarrateFormValues(
+                input_path=input_path,
+                script_path=script_path,
+                name=name,
+                output_dir=output_dir,
+                preview=preview,
+            ).to_request(),
+            cancel_event=cancel_event,
+            progress=progress,
+        )
+        return job_dir, read_duration_warning(job_dir)
+
+    def resume_narration(self, job_dir, *, cancel_event=None, progress=None):
+        completed = self.narrate_service.resume(
+            Path(job_dir), cancel_event=cancel_event, progress=progress,
+        )
+        return completed, read_duration_warning(completed)
+
 
 def launch_gui(controller: LauncherController | None = None) -> None:
     if controller is None:
@@ -200,6 +258,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     saved = load_beat_sync_settings()
     saved_transcribe = load_transcribe_settings()
     saved_script_draft = load_script_draft_settings()
+    saved_narrate = load_narrate_settings()
     saved_every_n = saved.get("every_n", "auto")
     if saved_every_n != "auto":
         try:
@@ -234,6 +293,9 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     transcribe_denoise_var = tk.BooleanVar(value=bool(saved_transcribe.get("denoise", False)))
     transcribe_preview_var = tk.BooleanVar(value=bool(saved_transcribe.get("preview", False)))
     script_draft_input_var = tk.StringVar(value=saved_script_draft.get("input", ""))
+    narrate_input_var = tk.StringVar(value=saved_narrate.get("input", ""))
+    narrate_script_var = tk.StringVar(value=saved_narrate.get("script", ""))
+    narrate_preview_var = tk.BooleanVar(value=saved_narrate.get("preview", False) is True)
     status_var = tk.StringVar(value="新しいジョブを作成するか、既存ジョブを開いてください。")
     mode_defaults = {
         JobMode.BEAT_SYNC.value: {
@@ -247,6 +309,10 @@ def launch_gui(controller: LauncherController | None = None) -> None:
         JobMode.SCRIPT_DRAFT.value: {
             "name": saved_script_draft.get("name", "script-draft-job"),
             "output_dir": saved_script_draft.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+        },
+        JobMode.NARRATE.value: {
+            "name": saved_narrate.get("name", "narrate-job"),
+            "output_dir": saved_narrate.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
         },
     }
 
@@ -459,6 +525,42 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     )
     script_draft_input_button.grid(row=0, column=2, padx=4)
 
+    narrate_frame = ttk.LabelFrame(frame, text="ナレーション", padding=12)
+    narrate_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(14, 4))
+    narrate_frame.columnconfigure(1, weight=1)
+    ttk.Label(narrate_frame, text="入力動画").grid(row=0, column=0, sticky="w")
+    narrate_input_entry = ttk.Entry(narrate_frame, textvariable=narrate_input_var, width=48)
+    narrate_input_entry.grid(row=0, column=1, sticky="ew", pady=4)
+
+    def choose_narrate_input() -> None:
+        selected = filedialog.askopenfilename(
+            title="ナレーションする動画を選択",
+            filetypes=(("Video", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"), ("All files", "*.*")),
+        )
+        if selected:
+            narrate_input_var.set(selected)
+
+    narrate_input_button = ttk.Button(narrate_frame, text="選択", command=choose_narrate_input)
+    narrate_input_button.grid(row=0, column=2, padx=4)
+    ttk.Label(narrate_frame, text="台本").grid(row=1, column=0, sticky="w")
+    narrate_script_entry = ttk.Entry(narrate_frame, textvariable=narrate_script_var, width=48)
+    narrate_script_entry.grid(row=1, column=1, sticky="ew", pady=4)
+
+    def choose_narrate_script() -> None:
+        selected = filedialog.askopenfilename(
+            title="ナレーション台本を選択",
+            filetypes=(("Markdown / Text", "*.md *.txt"), ("All files", "*.*")),
+        )
+        if selected:
+            narrate_script_var.set(selected)
+
+    narrate_script_button = ttk.Button(narrate_frame, text="選択", command=choose_narrate_script)
+    narrate_script_button.grid(row=1, column=2, padx=4)
+    narrate_preview_check = ttk.Checkbutton(
+        narrate_frame, text="字幕付きプレビューを作成", variable=narrate_preview_var,
+    )
+    narrate_preview_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
+
     def create_job() -> None:
         if active_cancel_event is not None:
             return
@@ -481,11 +583,14 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     completed_transcribe_inspection = False
     current_script_draft_job: Path | None = None
     completed_script_draft_inspection = False
+    current_narrate_job: Path | None = None
+    completed_narrate_inspection = False
     active_cancel_event: threading.Event | None = None
 
     def open_job() -> None:
         nonlocal current_transcribe_job, current_transcribe_model, completed_transcribe_inspection
         nonlocal current_script_draft_job, completed_script_draft_inspection
+        nonlocal current_narrate_job, completed_narrate_inspection
         if active_cancel_event is not None:
             return
         selected = filedialog.askdirectory(title=".media-job を選択")
@@ -533,6 +638,19 @@ def launch_gui(controller: LauncherController | None = None) -> None:
                 completed_script_draft_inspection = True
                 script_draft_button.configure(text="完了済みジョブ（確認のみ）")
                 script_draft_button.state(["disabled"])
+            update_mode_fields()
+        elif manifest.mode is JobMode.NARRATE:
+            mode_var.set(JobMode.NARRATE.value)
+            if manifest.status.value in {"pending", "failed", "interrupted"}:
+                current_narrate_job = Path(selected)
+                completed_narrate_inspection = False
+                narrate_button.configure(text="ナレーションを再開")
+                narrate_button.state(["!disabled"])
+            elif manifest.status.value == "succeeded":
+                current_narrate_job = None
+                completed_narrate_inspection = True
+                narrate_button.configure(text="完了済みジョブ（確認のみ）")
+                narrate_button.state(["disabled"])
             update_mode_fields()
 
     def finish_error(message: str) -> None:
@@ -937,6 +1055,133 @@ def launch_gui(controller: LauncherController | None = None) -> None:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def narrate_values() -> NarrateFormValues:
+        return NarrateFormValues(
+            input_path=narrate_input_var.get(),
+            script_path=narrate_script_var.get(),
+            name=name_var.get(),
+            output_dir=output_var.get(),
+            preview=narrate_preview_var.get(),
+        )
+
+    def set_narrate_mutable(enabled: bool) -> None:
+        state = ["!disabled"] if enabled else ["disabled"]
+        for widget in (
+            narrate_input_entry,
+            narrate_input_button,
+            narrate_script_entry,
+            narrate_script_button,
+            narrate_preview_check,
+            narrate_button,
+            mode_box,
+            name_entry,
+            output_entry,
+            output_button,
+            prepare_button,
+            estimate_button,
+            renumber_button,
+            create_button,
+            open_button,
+        ):
+            widget.state(state)
+        narrate_cancel_button.state(["disabled"] if enabled else ["!disabled"])
+
+    def finish_narration_success(job_dir: Path, warning) -> None:
+        nonlocal active_cancel_event, current_narrate_job
+        active_cancel_event = None
+        current_narrate_job = None
+        set_narrate_mutable(True)
+        narrate_button.configure(text="ナレーションを開始")
+        resolved = Path(job_dir).resolve()
+        status_var.set(f"ナレーション完了: {resolved}")
+        if warning is not None:
+            messagebox.showinfo(
+                "ナレーション時間の警告",
+                (
+                    f"元動画: {warning.source_duration_ms} ms\n"
+                    f"ナレーション: {warning.narration_duration_ms} ms"
+                ),
+                parent=root,
+            )
+
+    def finish_narration_error(category: str, interrupted: bool = False) -> None:
+        nonlocal active_cancel_event
+        active_cancel_event = None
+        set_narrate_mutable(True)
+        status_var.set(
+            "ナレーションを中断しました"
+            if interrupted
+            else f"ナレーション失敗: {category}"
+        )
+        if not interrupted:
+            messagebox.showerror("ナレーション失敗", category, parent=root)
+
+    def start_or_resume_narration() -> None:
+        nonlocal active_cancel_event
+        try:
+            selected_job = current_narrate_job
+            if selected_job is None:
+                request = narrate_values().to_request()
+                save_narrate_settings(
+                    {
+                        "input": str(request.input_path),
+                        "script": str(request.script_path),
+                        "name": request.name,
+                        "output_dir": str(request.output_dir),
+                        "preview": request.preview,
+                    }
+                )
+            else:
+                request = None
+        except Exception:
+            finish_narration_error("input validation")
+            return
+
+        active_cancel_event = threading.Event()
+        cancel_event = active_cancel_event
+        set_narrate_mutable(False)
+        status_var.set("ナレーションを開始しています…")
+
+        def progress(step: str) -> None:
+            message = _narration_progress_message(step)
+            root.after(0, lambda: status_var.set(message))
+
+        def worker() -> None:
+            try:
+                if selected_job is None:
+                    assert request is not None
+                    job_dir, warning = controller.prepare_narration(
+                        input_path=str(request.input_path),
+                        script_path=str(request.script_path),
+                        name=request.name,
+                        output_dir=str(request.output_dir),
+                        preview=request.preview,
+                        cancel_event=cancel_event,
+                        progress=progress,
+                    )
+                else:
+                    job_dir, warning = controller.resume_narration(
+                        selected_job, cancel_event=cancel_event, progress=progress,
+                    )
+            except NarrateInterrupted:
+                root.after(0, lambda: finish_narration_error("", interrupted=True))
+            except NarrateFailed as exc:
+                root.after(0, lambda category=exc.category: finish_narration_error(category))
+            except Exception:
+                root.after(0, lambda: finish_narration_error("execution failure"))
+            else:
+                root.after(
+                    0,
+                    lambda path=job_dir, result_warning=warning: finish_narration_success(path, result_warning),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def cancel_narration() -> None:
+        if active_cancel_event is not None and not active_cancel_event.is_set():
+            active_cancel_event.set()
+            status_var.set("キャンセル中…")
+
     transcribe_actions = ttk.Frame(transcribe_frame)
     transcribe_actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 0))
     transcribe_actions.columnconfigure(0, weight=1)
@@ -962,6 +1207,19 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     )
     script_draft_cancel_button.grid(row=0, column=1, sticky="ew")
     script_draft_cancel_button.state(["disabled"])
+
+    narrate_actions = ttk.Frame(narrate_frame)
+    narrate_actions.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+    narrate_actions.columnconfigure(0, weight=1)
+    narrate_button = ttk.Button(
+        narrate_actions, text="ナレーションを開始", command=start_or_resume_narration,
+    )
+    narrate_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+    narrate_cancel_button = ttk.Button(
+        narrate_actions, text="キャンセル", command=cancel_narration,
+    )
+    narrate_cancel_button.grid(row=0, column=1, sticky="ew")
+    narrate_cancel_button.state(["disabled"])
 
     action_frame = ttk.Frame(frame)
     action_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(14, 8))
@@ -991,7 +1249,8 @@ def launch_gui(controller: LauncherController | None = None) -> None:
 
     def update_mode_fields(event=None) -> None:
         nonlocal current_transcribe_job, current_transcribe_model, completed_transcribe_inspection
-        nonlocal current_script_draft_job, completed_script_draft_inspection, displayed_mode
+        nonlocal current_script_draft_job, completed_script_draft_inspection
+        nonlocal current_narrate_job, completed_narrate_inspection, displayed_mode
         if displayed_mode in mode_defaults:
             mode_defaults[displayed_mode] = {
                 "name": name_var.get(),
@@ -1017,6 +1276,15 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             completed_script_draft_inspection = False
             script_draft_button.configure(text="台本下書きを開始")
             script_draft_button.state(["!disabled"])
+        if (
+            selected_mode != JobMode.NARRATE.value
+            and completed_narrate_inspection
+            and active_cancel_event is None
+        ):
+            current_narrate_job = None
+            completed_narrate_inspection = False
+            narrate_button.configure(text="ナレーションを開始")
+            narrate_button.state(["!disabled"])
         if selected_mode in mode_defaults:
             name_var.set(mode_defaults[selected_mode]["name"])
             output_var.set(mode_defaults[selected_mode]["output_dir"])
@@ -1025,24 +1293,35 @@ def launch_gui(controller: LauncherController | None = None) -> None:
             beat_frame.grid()
             transcribe_frame.grid_remove()
             script_draft_frame.grid_remove()
+            narrate_frame.grid_remove()
             prepare_button.grid()
             create_button.grid_remove()
         elif mode_var.get() == JobMode.TRANSCRIBE.value:
             beat_frame.grid_remove()
             transcribe_frame.grid()
             script_draft_frame.grid_remove()
+            narrate_frame.grid_remove()
             prepare_button.grid_remove()
             create_button.grid_remove()
         elif mode_var.get() == JobMode.SCRIPT_DRAFT.value:
             beat_frame.grid_remove()
             transcribe_frame.grid_remove()
             script_draft_frame.grid()
+            narrate_frame.grid_remove()
+            prepare_button.grid_remove()
+            create_button.grid_remove()
+        elif mode_var.get() == JobMode.NARRATE.value:
+            beat_frame.grid_remove()
+            transcribe_frame.grid_remove()
+            script_draft_frame.grid_remove()
+            narrate_frame.grid()
             prepare_button.grid_remove()
             create_button.grid_remove()
         else:
             beat_frame.grid_remove()
             transcribe_frame.grid_remove()
             script_draft_frame.grid_remove()
+            narrate_frame.grid_remove()
             prepare_button.grid_remove()
             create_button.grid()
 

@@ -21,6 +21,14 @@ class JobMode(StrEnum):
 
 
 _STEP_ORDERS = {
+    JobMode.NARRATE: (
+        "probe-input",
+        "parse-script",
+        "synthesize-utterances",
+        "concat-audio",
+        "render-artifacts",
+        "render-preview",
+    ),
     JobMode.TRANSCRIBE: (
         "probe-input",
         "extract-audio",
