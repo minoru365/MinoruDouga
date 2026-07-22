@@ -47,9 +47,15 @@ def _validate_create_arguments(args: argparse.Namespace) -> None:
     if args.resume_job is not None:
         args.command_parser.error("script-draft create accepts exactly one input path")
     required = {"Name": args.name, "OutputDir": args.output_dir}
-    missing = [name for name, value in required.items() if not value]
+    missing = [
+        name
+        for name, value in required.items()
+        if not isinstance(value, str) or not value.strip()
+    ]
     if missing:
         args.command_parser.error("missing script-draft options: " + ", ".join(missing))
+    args.name = args.name.strip()
+    args.output_dir = args.output_dir.strip()
 
 
 def _create(args: argparse.Namespace) -> int:

@@ -42,6 +42,8 @@ def test_resume_runs_service_and_prints_resolved_job_path(monkeypatch, tmp_path,
 @pytest.mark.parametrize("arguments", (
     ["script-draft", "input.mp4", "-OutputDir", "jobs"],
     ["script-draft", "input.mp4", "-Name", "demo"],
+    ["script-draft", "input.mp4", "-Name", "   ", "-OutputDir", "jobs"],
+    ["script-draft", "input.mp4", "-Name", "demo", "-OutputDir", "   "],
     ["script-draft", "input.mp4", "extra", "-Name", "demo", "-OutputDir", "jobs"],
     ["script-draft", "resume"],
     ["script-draft", "resume", "job", "-Name", "demo"],
@@ -50,6 +52,23 @@ def test_command_rejects_missing_or_mode_incompatible_arguments(arguments):
     with pytest.raises(SystemExit) as raised:
         main(arguments)
     assert raised.value.code == 2
+
+
+def test_create_strips_name_and_output_directory(monkeypatch, tmp_path):
+    calls = []
+
+    class Service:
+        def create_and_run(self, request):
+            calls.append(request)
+            return tmp_path / "done"
+
+    monkeypatch.setattr("minoru_studio.script_draft.commands.ScriptDraftService", lambda: Service())
+
+    assert main([
+        "script-draft", str(tmp_path / "input.mp4"), "-Name", " demo ", "-OutputDir", f" {tmp_path} ",
+    ]) == 0
+    assert calls[0].name == "demo"
+    assert calls[0].output_dir == tmp_path.resolve()
 
 
 def test_failure_returns_stable_category(monkeypatch, tmp_path, capsys):
