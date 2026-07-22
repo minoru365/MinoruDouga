@@ -12,6 +12,19 @@ from minoru_studio.narrate.models import DurationWarning, TimedUtterance, Uttera
 import minoru_studio.narrate.artifacts as artifacts
 
 
+def _skip_unavailable_windows_symlink(error: OSError) -> None:
+    if error.winerror == 1314:
+        pytest.skip("Windows symlink privilege is unavailable")
+    raise error
+
+
+def test_symlink_skip_helper_reraises_unexpected_os_error():
+    error = OSError("unexpected symlink failure")
+    with pytest.raises(OSError) as caught:
+        _skip_unavailable_windows_symlink(error)
+    assert caught.value is error
+
+
 def test_timeline_rounds_cumulative_decimal_boundaries_not_individual_durations(tmp_path: Path):
     utterances = [Utterance(index, text) for index, text in enumerate(("一", "二", "三"), 1)]
     wavs = [(tmp_path / f"utterance-{item.index:04d}.wav", WavInfo(Decimal("0.3335"), 10_000, 1, 2)) for item in utterances]
@@ -129,8 +142,8 @@ def test_artifacts_valid_requires_exact_output_and_manifest_set_and_reads_conten
     alias = outputs / "extra.txt"
     try:
         alias.symlink_to(outputs / "narration.wav")
-    except OSError:
-        pytest.skip("symlink capability is unavailable")
+    except OSError as exc:
+        _skip_unavailable_windows_symlink(exc)
     assert not artifacts_valid(job, include_preview=True)
     alias.unlink()
     warning = job / "work" / "duration-warning.json"
