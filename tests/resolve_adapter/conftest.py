@@ -68,6 +68,64 @@ def build_prepared_job(tmp_path, kinds):
     return job_dir
 
 
+def build_prepared_transcribe_job(tmp_path, suffix=".mp4"):
+    source = tmp_path / ("source" + suffix)
+    source.write_bytes(b"video")
+    store = JobStore()
+    job_dir = store.create(
+        tmp_path / "jobs",
+        "transcribe demo",
+        JobMode.TRANSCRIBE,
+        [source],
+    )
+    records = []
+    for kind, name in (
+        ("transcript-txt", "transcript.txt"),
+        ("subtitles-srt", "subtitles.srt"),
+        ("subtitles-vtt", "subtitles.vtt"),
+    ):
+        path = job_dir / "outputs" / name
+        path.write_bytes(kind.encode("ascii"))
+        records.append(fingerprint_artifact(job_dir, path, kind))
+
+    def finish(latest):
+        latest.status = JobStatus.SUCCEEDED
+        latest.artifacts = records
+
+    store.update(job_dir, finish)
+    return job_dir
+
+
+def build_prepared_narrate_job(tmp_path):
+    video = tmp_path / "source.mp4"
+    script = tmp_path / "script.txt"
+    video.write_bytes(b"video")
+    script.write_bytes(b"approved script")
+    store = JobStore()
+    job_dir = store.create(
+        tmp_path / "jobs",
+        "narrate demo",
+        JobMode.NARRATE,
+        [video, script],
+    )
+    records = []
+    for kind, name in (
+        ("narration-wav", "narration.wav"),
+        ("subtitles-srt", "subtitles.srt"),
+        ("subtitles-vtt", "subtitles.vtt"),
+    ):
+        path = job_dir / "outputs" / name
+        path.write_bytes(kind.encode("ascii"))
+        records.append(fingerprint_artifact(job_dir, path, kind))
+
+    def finish(latest):
+        latest.status = JobStatus.SUCCEEDED
+        latest.artifacts = records
+
+    store.update(job_dir, finish)
+    return job_dir
+
+
 @pytest.fixture
 def prepared_photo_job(tmp_path):
     return build_prepared_job(tmp_path, (MaterialKind.PHOTO,))
@@ -79,3 +137,13 @@ def prepared_mixed_job(tmp_path):
         tmp_path,
         (MaterialKind.PHOTO, MaterialKind.VIDEO),
     )
+
+
+@pytest.fixture
+def prepared_transcribe_job(tmp_path):
+    return build_prepared_transcribe_job(tmp_path)
+
+
+@pytest.fixture
+def prepared_narrate_job(tmp_path):
+    return build_prepared_narrate_job(tmp_path)

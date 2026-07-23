@@ -147,6 +147,118 @@ def _validate_plan(plan, input_count):
         raise ContractError("material order_index values must be contiguous")
 
 
+_RESOLVE_VIDEO_SUFFIXES = frozenset(
+    (".avi", ".mkv", ".mov", ".mp4", ".mxf", ".webm")
+)
+
+
+def _regular_file(path, label):
+    try:
+        stat = os.stat(path)
+    except OSError as exc:
+        raise ContractError("{0} is missing: {1}".format(label, exc))
+    if not os.path.isfile(path):
+        raise ContractError("{0} must be a regular file".format(label))
+    return stat
+
+
+def _validated_inputs(manifest):
+    inputs = manifest.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        raise ContractError("job inputs are missing")
+    for expected in inputs:
+        if not isinstance(expected, dict):
+            raise ContractError("job input must be an object")
+        try:
+            path = os.path.realpath(expected["path"])
+            stat = _regular_file(path, "input")
+            if (
+                stat.st_size != expected["size"]
+                or stat.st_mtime_ns != expected["mtime_ns"]
+                or sha256_file(path) != expected["sha256"]
+            ):
+                raise ContractError("input changed: {0}".format(path))
+        except KeyError as exc:
+            raise ContractError("input is incomplete: {0}".format(exc))
+    return inputs
+
+
+def _required_artifact(root, artifacts, kind, relative):
+    matches = [
+        item
+        for item in artifacts
+        if isinstance(item, dict) and item.get("kind") == kind
+    ]
+    if len(matches) != 1:
+        raise ContractError("job must contain one {0}".format(kind))
+    record = matches[0]
+    try:
+        path = contained_path(root, record["path"])
+        if os.path.normcase(os.path.relpath(path, root)) != os.path.normcase(
+            relative.replace("/", os.sep)
+        ):
+            raise ContractError("{0} path is invalid".format(kind))
+        stat = _regular_file(path, kind)
+        if stat.st_size != record["size"] or sha256_file(path) != record["sha256"]:
+            raise ContractError("{0} fingerprint mismatch".format(kind))
+    except KeyError as exc:
+        raise ContractError("{0} record is incomplete: {1}".format(kind, exc))
+    return {"path": path, "size": stat.st_size, "sha256": record["sha256"]}
+
+
+def load_validated_media_job(job_dir):
+    root = os.path.realpath(job_dir)
+    manifest = _read_object(os.path.join(root, "job.json"))
+    if manifest.get("schema_version") != 1 or manifest.get("status") != "succeeded":
+        raise ContractError("job is not successful")
+    inputs = _validated_inputs(manifest)
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ContractError("job artifacts must be a list")
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ContractError("job name must be non-empty")
+    if manifest.get("mode") == "transcribe" and len(inputs) == 1:
+        video = inputs[0]["path"]
+        audio_key = "source-audio"
+        audio_path = video
+        required = (
+            ("transcript-txt", "outputs/transcript.txt"),
+            ("subtitles-srt", "outputs/subtitles.srt"),
+            ("subtitles-vtt", "outputs/subtitles.vtt"),
+        )
+    elif manifest.get("mode") == "narrate" and len(inputs) == 2:
+        video = inputs[0]["path"]
+        audio_key = "narration-audio"
+        audio_path = None
+        required = (
+            ("narration-wav", "outputs/narration.wav"),
+            ("subtitles-srt", "outputs/subtitles.srt"),
+            ("subtitles-vtt", "outputs/subtitles.vtt"),
+        )
+    else:
+        raise ContractError("job mode is not supported by Resolve media placement")
+    if os.path.splitext(video)[1].lower() not in _RESOLVE_VIDEO_SUFFIXES:
+        raise ContractError("source input is not a Resolve-readable video")
+    verified = {
+        kind: _required_artifact(root, artifacts, kind, relative)
+        for kind, relative in required
+    }
+    if audio_path is None:
+        audio_path = verified["narration-wav"]["path"]
+    return {
+        "root": root,
+        "manifest": manifest,
+        "mode": manifest["mode"],
+        "timeline_name": "{0} Resolve".format(name),
+        "sources": [
+            {"key": "source-video", "kind": "video", "path": video},
+            {"key": audio_key, "kind": "audio", "path": audio_path},
+        ],
+        "subtitle": verified["subtitles-srt"],
+    }
+
+
 def load_validated_job(job_dir):
     root = os.path.realpath(job_dir)
     manifest = _read_object(os.path.join(root, "job.json"))
