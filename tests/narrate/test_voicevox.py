@@ -58,6 +58,21 @@ class ConnectionFactory:
         return connection
 
 
+class StrictHeaderConnection(FakeConnection):
+    def request(self, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> None:
+        # http.client._send_request は headers を無条件に反復するため None を受け付けない
+        frozenset(name.lower() for name in headers)
+        super().request(method, path, body, headers)
+
+
+class StrictHeaderConnectionFactory(ConnectionFactory):
+    def __call__(self, host: str, port: int, timeout: float) -> FakeConnection:
+        self.calls.append((host, port, timeout))
+        connection = StrictHeaderConnection(next(self.responses))
+        self.connections.append(connection)
+        return connection
+
+
 def speakers(style_id: object = 2, *, duplicate_speaker: bool = False, duplicate_style: bool = False) -> bytes:
     styles = [{"name": "ノーマル", "id": style_id}]
     if duplicate_style:
@@ -85,6 +100,18 @@ def test_preflight_resolves_exact_names_and_uses_literal_loopback_origin():
     assert factory.calls == [("127.0.0.1", 50021, 10), ("127.0.0.1", 50021, 10)]
     assert [connection.requests[0][:2] for connection in factory.connections] == [("GET", "/version"), ("GET", "/speakers")]
     assert all(connection.closed for connection in factory.connections)
+
+
+def test_requests_send_headers_compatible_with_real_http_client():
+    factory = StrictHeaderConnectionFactory(
+        [FakeResponse(body=b'"0.25.2"'), FakeResponse(body=speakers())]
+    )
+    client = VoicevoxClient(connection_factory=factory)
+
+    provenance = client.preflight()
+
+    assert provenance.engine_version == "0.25.2"
+    assert provenance.speaker_id == 2
 
 
 def test_synthesize_url_encodes_text_and_replaces_only_speed_scale():

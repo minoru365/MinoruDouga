@@ -114,7 +114,7 @@ class VoicevoxClient:
         connection: http.client.HTTPConnection | None = None
         try:
             connection = self._connection_factory(_HOST, _PORT, _TIMEOUT)
-            connection.request(method, path, body=body, headers=headers)
+            connection.request(method, path, body=body, headers=headers or {})
             response = connection.getresponse()
             if not 200 <= response.status < 300:
                 raise error_type()
