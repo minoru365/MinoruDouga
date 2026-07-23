@@ -1,7 +1,7 @@
 # MinoruStudio
 
-MinoruStudioは、MinoruDougaの音ハメを包含し、字幕、読み上げ、リポジトリの
-デモ動画制作などを段階的に扱うWindows向けローカル制作ツールです。
+MinoruStudioは、MinoruDougaの音ハメを包含し、音ハメ、文字起こし、読み上げを
+扱うWindows向けローカル制作ツールです。
 
 BGMを解析して静止画・動画の順序とカット位置を確定した `.media-job` を作り、
 Resolve内アダプターから新しいタイムラインとして安全に適用できます。
