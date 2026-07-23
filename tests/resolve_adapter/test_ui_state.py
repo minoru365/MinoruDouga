@@ -24,6 +24,10 @@ from resolve_adapter.minoru_studio_resolve.ui import (
             ("スチル設定変更後に再測定", "resume", False),
         ),
         ("ready", ("タイムラインを生成", "apply", False)),
+        (
+            "awaiting_subtitle_import",
+            ("字幕読み込みを確認", "confirm_subtitles", False),
+        ),
         ("applied", ("新しい適用を開始", "start", True)),
         ("failed", ("新しい適用を開始", "start", True)),
     ],
@@ -52,6 +56,34 @@ def test_waiting_instructions_include_the_required_user_action():
     )
     assert "15" in message
     assert "環境設定" in message
+
+
+def test_subtitle_checkpoint_instruction_directs_manual_import():
+    message = instruction_for_detail(
+        {
+            "state": "awaiting_subtitle_import",
+            "timeline": {"name": "narrate demo Resolve"},
+            "subtitle": {"path": "C:/job/outputs/subtitles.srt"},
+        }
+    )
+    assert "Resolve" in message
+    assert "字幕" in message
+    assert "subtitles.srt" in message
+    assert "字幕読み込みを確認" in message
+
+
+def test_media_confirmation_text_is_safe_and_non_destructive():
+    message = confirmation_text(
+        {
+            "mode": "narrate",
+            "timeline_name": "narrate demo Resolve",
+            "audio_label": "生成ナレーション",
+            "subtitle_path": "C:/job/outputs/subtitles.srt",
+        }
+    )
+    assert "生成ナレーション" in message
+    assert "subtitles.srt" in message
+    assert "既存のタイムラインやビンは上書きしません" in message
 
 
 def test_confirmation_text_summarizes_timeline_mutation():

@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from minoru_studio_resolve.gateway import ResolveGateway
 from minoru_studio_resolve.job_io import ApplicationStore
+from minoru_studio_resolve.media_service import MediaPlacementService
 from minoru_studio_resolve.service import AdapterService
 from minoru_studio_resolve.state import next_action
 
@@ -65,6 +66,8 @@ def action_for_detail(detail):
         return "スチル設定変更後に再測定", "resume", False
     if action == "apply":
         return "タイムラインを生成", "apply", False
+    if action == "confirm_subtitles":
+        return "字幕読み込みを確認", "confirm_subtitles", False
     if action == "new_attempt":
         return "新しい適用を開始", "start", True
     return "処理状態を確認してください", None, False
@@ -91,6 +94,19 @@ def instruction_for_detail(detail):
             still.get("required_frames", "?"),
             still.get("actual_frames", "?"),
         )
+    if state == "awaiting_subtitle_import":
+        timeline = detail.get("timeline") or {}
+        subtitle = detail.get("subtitle") or {}
+        return (
+            "タイムライン {0} を生成しました。\n"
+            "Resolve 標準UIで次の字幕ファイルを字幕トラックへ"
+            "手動で読み込んでください:\n{1}\n"
+            "字幕トラックが編集可能なことを確認したら、MinoruStudio を"
+            "もう一度実行して「字幕読み込みを確認」を押してください。"
+        ).format(
+            timeline.get("name", "timeline"),
+            subtitle.get("path", ""),
+        )
     if state == "ready":
         return "設定確認済みです。タイムラインを生成できます。"
     if state == "applied":
@@ -104,6 +120,20 @@ def instruction_for_detail(detail):
 
 
 def confirmation_text(summary):
+    if summary.get("mode") in ("transcribe", "narrate"):
+        return (
+            "新しいタイムラインを生成します。\n\n"
+            "名前: {timeline_name}\n"
+            "V1: 元動画\n"
+            "A1: {audio_label}\n"
+            "字幕: Resolveで手動読み込み\n"
+            "字幕ファイル: {subtitle_path}\n\n"
+            "既存のタイムラインやビンは上書きしません。続行しますか？"
+        ).format(
+            timeline_name=summary.get("timeline_name", ""),
+            audio_label=summary.get("audio_label", ""),
+            subtitle_path=summary.get("subtitle_path", ""),
+        )
     counts = summary.get("material_counts") or {}
     still = summary.get("still") or {}
     still_text = "対象なし"
@@ -154,7 +184,12 @@ class AdapterWindow(object):
         self.root = root
         self.gateway = ResolveGateway(resolve)
         self.applications = ApplicationStore()
-        self.service = AdapterService(self.gateway, self.applications)
+        self.beat_service = AdapterService(self.gateway, self.applications)
+        self.media_service = MediaPlacementService(
+            self.gateway,
+            self.applications,
+        )
+        self.service = None
         self.detail = None
         self.action = None
         self.new_attempt = False
@@ -300,6 +335,14 @@ class AdapterWindow(object):
             return
         try:
             job_dir, manifest = _read_job(path)
+            if manifest.get("mode") == "beat-sync":
+                self.service = self.beat_service
+            elif manifest.get("mode") in ("transcribe", "narrate"):
+                self.service = self.media_service
+            else:
+                raise ValueError(
+                    "このジョブモードはResolve適用に対応していません"
+                )
             project = self.gateway.current_project()
             self.job_name.set(str(manifest.get("name", "-")))
             self.preparation_state.set(str(manifest.get("status", "-")))
@@ -313,6 +356,7 @@ class AdapterWindow(object):
             self._set_action(detail)
         except Exception as exc:
             self.detail = None
+            self.service = None
             self.application_state.set("読込失敗")
             self.status_text.set(str(exc))
             self.action = None
@@ -332,6 +376,17 @@ class AdapterWindow(object):
             parent=self.root,
         )
 
+    def _confirm_subtitles(self, summary):
+        return messagebox.askokcancel(
+            "字幕読み込みの確認",
+            (
+                "Resolve 標準UIで次の字幕ファイルの手動読み込みは"
+                "完了しましたか？\n{0}\n\n"
+                "OK を押すと適用完了として記録します。"
+            ).format(summary.get("subtitle_path", "")),
+            parent=self.root,
+        )
+
     def _run(self, action, new_attempt):
         if self.busy:
             return
@@ -348,12 +403,19 @@ class AdapterWindow(object):
         self.status_text.set("Resolve 処理を実行しています…")
         self.root.update_idletasks()
         try:
+            if self.service is None:
+                raise ValueError("現在の状態では操作できません")
             if action == "start":
                 result = self.service.start(path, new_attempt=new_attempt)
             elif action == "resume":
                 result = self.service.resume(path)
             elif action == "apply":
                 result = self.service.apply_ready(path, confirm=self._confirm)
+            elif action == "confirm_subtitles":
+                result = self.service.confirm_subtitle_import(
+                    path,
+                    confirm=self._confirm_subtitles,
+                )
             else:
                 raise ValueError("現在の状態では操作できません")
             self.busy = False
@@ -361,6 +423,7 @@ class AdapterWindow(object):
             if result.get("state") in (
                 "awaiting_in_out",
                 "awaiting_still_setting",
+                "awaiting_subtitle_import",
             ):
                 messagebox.showinfo(
                     "次の操作",
