@@ -17,7 +17,6 @@ class JobMode(StrEnum):
     TRANSCRIBE = "transcribe"
     NARRATE = "narrate"
     SCRIPT_DRAFT = "script-draft"
-    REPO_DEMO = "repo-demo"
 
 
 _STEP_ORDERS = {

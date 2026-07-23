@@ -114,5 +114,4 @@ def test_all_fixed_modes_are_declared():
         "transcribe",
         "narrate",
         "script-draft",
-        "repo-demo",
     }
