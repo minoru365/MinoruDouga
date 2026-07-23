@@ -12,10 +12,15 @@ from minoru_studio.narrate.models import DurationWarning
 
 def test_controller_creates_and_inspects_pending_job(tmp_path):
     controller = LauncherController()
-    job_dir = controller.create_job("repo-demo", "demo", str(tmp_path))
+    job_dir = controller.create_job("script-draft", "draft", str(tmp_path))
     manifest = controller.inspect_job(str(job_dir))
-    assert manifest.mode.value == "repo-demo"
+    assert manifest.mode.value == "script-draft"
     assert manifest.status.value == "pending"
+
+
+def test_controller_rejects_retired_repo_demo_mode(tmp_path):
+    with pytest.raises(ValueError):
+        LauncherController().create_job("repo-demo", "demo", str(tmp_path))
 
 
 def test_launch_gui_preserves_a_falsy_injected_controller(monkeypatch):
@@ -335,7 +340,7 @@ def test_opened_failed_transcription_resumes_without_validating_or_saving_new_fo
         and widget.kwargs["textvariable"].get() == "beat-name"
     )
     mode_var = mode_box.kwargs["textvariable"]
-    mode_var.set(JobMode.REPO_DEMO.value)
+    mode_var.set(JobMode.NARRATE.value)
     mode_box.bindings["<<ComboboxSelected>>"]()
     mode_var.set(JobMode.BEAT_SYNC.value)
     mode_box.bindings["<<ComboboxSelected>>"]()
@@ -464,7 +469,7 @@ def test_completed_transcription_inspection_resets_to_new_launcher_after_leaving
     assert transcribe_button.text == "完了済みジョブ（確認のみ）"
     assert transcribe_button.states[-1] == "disabled"
 
-    mode_var.set(JobMode.REPO_DEMO.value)
+    mode_var.set(JobMode.NARRATE.value)
     mode_box.bindings["<<ComboboxSelected>>"]()
     mode_var.set(JobMode.TRANSCRIBE.value)
     mode_box.bindings["<<ComboboxSelected>>"]()

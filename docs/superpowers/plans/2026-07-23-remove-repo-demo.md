@@ -183,17 +183,17 @@
 
 **Interfaces:**
 - Consumes: Task 1 の4モード enum、Task 2 の現行製品文書。
-- Produces: 既存モードの回帰がなく、ソース・テスト・現行文書に実装対象としての `repo-demo` が残らない検証結果。
+- Produces: 既存モードの回帰がなく、本番ソースと現行文書に実装対象としての `repo-demo` が残らない検証結果。廃止値を拒否する負の回帰テストと文書境界テスト内の文字列は許容する。
 
 - [ ] **Step 1: 追跡対象の残存参照を機械検査する**
 
   Run:
 
   ```powershell
-  rg -n -i "repo-demo|repo demo|デモ組み立て" README.md docs/agent-handoff.md docs/media-automation-design.md src tests
+  rg -n -i "repo-demo|repo demo|デモ組み立て" README.md docs/agent-handoff.md docs/media-automation-design.md src/minoru_studio
   ```
 
-  Expected: exit 1（一致なし）。過去の `docs/superpowers/specs/` と `docs/superpowers/plans/` は履歴のため、この検査に含めない。
+  Expected: exit 1（一致なし）。負の回帰テストは文字列を明示的に保持するため `tests/` を含めない。過去の `docs/superpowers/specs/` と `docs/superpowers/plans/` も履歴のため、この検査に含めない。
 
 - [ ] **Step 2: 変更境界のテストを実行する**
 
