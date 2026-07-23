@@ -269,6 +269,8 @@ class ApplicationStore(object):
         project_name,
         attempt_id=None,
         now=None,
+        mode="beat-sync",
+        subtitle=None,
     ):
         root = os.path.realpath(job_dir)
         attempt_id = str(attempt_id or uuid.uuid4())
@@ -278,6 +280,7 @@ class ApplicationStore(object):
             "attempt_id": attempt_id,
             "job_id": job_id,
             "state": "staging",
+            "mode": str(mode),
             "project_id": project_id,
             "project_name": project_name,
             "created_at": timestamp,
@@ -287,6 +290,7 @@ class ApplicationStore(object):
             "items": [],
             "source_windows": [],
             "still": None,
+            "subtitle": subtitle,
             "timeline": None,
             "result": None,
             "last_error": None,

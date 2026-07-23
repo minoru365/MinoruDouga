@@ -4,12 +4,15 @@ class StateError(ValueError):
 
 TERMINAL_STATES = frozenset(("applied", "failed"))
 ALLOWED = {
-    "staging": frozenset(("awaiting_in_out", "checking_still", "failed")),
+    "staging": frozenset(
+        ("awaiting_in_out", "checking_still", "ready", "failed")
+    ),
     "awaiting_in_out": frozenset(("checking_still", "ready", "failed")),
     "checking_still": frozenset(("awaiting_still_setting", "ready", "failed")),
     "awaiting_still_setting": frozenset(("checking_still", "failed")),
     "ready": frozenset(("applying", "failed")),
-    "applying": frozenset(("applied", "failed")),
+    "applying": frozenset(("applied", "awaiting_subtitle_import", "failed")),
+    "awaiting_subtitle_import": frozenset(("applying", "failed")),
 }
 
 
@@ -34,6 +37,7 @@ def next_action(detail):
         "awaiting_still_setting": "retry_still",
         "ready": "apply",
         "applying": "recover_failed",
+        "awaiting_subtitle_import": "confirm_subtitles",
         "applied": "new_attempt",
         "failed": "new_attempt",
     }[state]
