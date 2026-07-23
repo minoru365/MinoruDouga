@@ -182,6 +182,29 @@ def test_missing_timeline_keeps_checkpoint(prepared_transcribe_job):
     )
 
 
+def test_leftover_operation_token_marks_attempt_failed(
+    prepared_transcribe_job,
+):
+    unused_resolve, service = make_media_service()
+    started = service.start(str(prepared_transcribe_job))
+    service.applications.claim(
+        str(prepared_transcribe_job),
+        started["attempt_id"],
+        "stale-token",
+    )
+    with pytest.raises(AdapterError, match="interrupted"):
+        service.apply_ready(
+            str(prepared_transcribe_job),
+            confirm=lambda _: True,
+        )
+    detail = service.applications.load(
+        str(prepared_transcribe_job),
+        started["attempt_id"],
+    )
+    assert detail["state"] == "failed"
+    assert detail["operation_token"] is None
+
+
 def test_sentinel_timeline_is_never_changed(prepared_transcribe_job):
     resolve, service = make_media_service()
     sentinel = resolve.project.sentinel_timeline
