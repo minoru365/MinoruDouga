@@ -146,10 +146,19 @@ class FakeTimeline:
 
 
 class FakeMediaPool:
-    def __init__(self, project, still_duration=None, lag_still_duration=False):
+    def __init__(
+        self,
+        project,
+        still_duration=None,
+        lag_still_duration=False,
+        audio_frames=120,
+        video_frames=120,
+    ):
         self.project = project
         self.still_duration = still_duration
         self.lag_still_duration = lag_still_duration
+        self.audio_frames = audio_frames
+        self.video_frames = video_frames
         self._pending_still_duration = None
         self.root = FakeFolder("root", "Master")
         self.current_folder = self.root
@@ -198,10 +207,17 @@ class FakeMediaPool:
         result = []
         for path, kind in zip(paths, kinds):
             self._item_number += 1
+            if kind == "audio":
+                frames = self.audio_frames
+            elif kind == "video":
+                frames = self.video_frames
+            else:
+                frames = 120
             item = FakeMediaPoolItem(
                 "item-{0}".format(self._item_number),
                 path,
                 kind,
+                frames=frames,
             )
             self.current_folder.clips.append(item)
             self.imported_items.append(item)
@@ -247,7 +263,14 @@ class FakeMediaPool:
                     and self._visual_appends > self.fail_visual_append_after
                 ):
                     return False
-            requested = int(clip["endFrame"]) - int(clip["startFrame"]) + 1
+            start = int(clip.get("startFrame", 0))
+            if "endFrame" in clip:
+                requested = int(clip["endFrame"]) - start + 1
+            else:
+                try:
+                    requested = int(item.frames) - start
+                except (TypeError, ValueError):
+                    requested = 100
             duration = requested
             if item.kind == "photo":
                 if self.still_duration is not None:
@@ -282,7 +305,14 @@ class FakeMediaPool:
 
 
 class FakeProject:
-    def __init__(self, still_duration=None, timeline_rate="30", lag_still_duration=False):
+    def __init__(
+        self,
+        still_duration=None,
+        timeline_rate="30",
+        lag_still_duration=False,
+        audio_frames=120,
+        video_frames=120,
+    ):
         self.project_id = "project-1"
         self.name = "Demo Project"
         self.timeline_rate = timeline_rate
@@ -293,6 +323,8 @@ class FakeProject:
             self,
             still_duration=still_duration,
             lag_still_duration=lag_still_duration,
+            audio_frames=audio_frames,
+            video_frames=video_frames,
         )
 
     def GetUniqueId(self):
@@ -361,11 +393,20 @@ class FakeProjectManager:
 
 
 class FakeResolve:
-    def __init__(self, still_duration=None, timeline_rate="30", lag_still_duration=False):
+    def __init__(
+        self,
+        still_duration=None,
+        timeline_rate="30",
+        lag_still_duration=False,
+        audio_frames=120,
+        video_frames=120,
+    ):
         self.project = FakeProject(
             still_duration=still_duration,
             timeline_rate=timeline_rate,
             lag_still_duration=lag_still_duration,
+            audio_frames=audio_frames,
+            video_frames=video_frames,
         )
         self.project_manager = FakeProjectManager(self.project)
 

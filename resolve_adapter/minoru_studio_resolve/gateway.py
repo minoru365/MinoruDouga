@@ -264,9 +264,12 @@ class ResolveGateway(object):
                 frames = int(frames)
             except (TypeError, ValueError):
                 frames = 0
-            if frames <= 0:
+            if frames < 0:
+                frames = 0
+            # Resolve reports no Frames property for audio-only clips.
+            if source["kind"] == "video" and frames <= 0:
                 raise GatewayError(
-                    "imported media frame count must be positive"
+                    "imported video frame count must be positive"
                 )
             details.append(
                 {
@@ -325,26 +328,22 @@ class ResolveGateway(object):
             try:
                 frames = int(item.GetClipProperty("Frames"))
             except (TypeError, ValueError):
-                raise GatewayError(
-                    "{0} frame count is invalid".format(label)
-                )
-            if frames <= 0:
+                frames = 0
+            if media_type == 1 and frames <= 0:
                 raise GatewayError(
                     "{0} frame count must be positive".format(label)
                 )
-            self._append(
-                media_pool,
-                timeline,
-                {
-                    "mediaPoolItem": item,
-                    "startFrame": 0,
-                    "endFrame": frames - 1,
-                    "mediaType": media_type,
-                    "trackIndex": 1,
-                    "recordFrame": record_frame,
-                },
-                label,
-            )
+            descriptor = {
+                "mediaPoolItem": item,
+                "mediaType": media_type,
+                "trackIndex": 1,
+                "recordFrame": record_frame,
+            }
+            # Audio-only clips expose no Frames property; append them whole.
+            if frames > 0:
+                descriptor["startFrame"] = 0
+                descriptor["endFrame"] = frames - 1
+            self._append(media_pool, timeline, descriptor, label)
         return {
             "video_key": video_key,
             "audio_key": audio_key,

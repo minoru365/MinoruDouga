@@ -12,8 +12,8 @@ from minoru_studio_resolve.state import next_action
 from tests.resolve_adapter.fakes import FakeResolve
 
 
-def make_media_service():
-    resolve = FakeResolve()
+def make_media_service(**fake_kwargs):
+    resolve = FakeResolve(**fake_kwargs)
     service = MediaPlacementService(
         ResolveGateway(resolve),
         ApplicationStore(),
@@ -66,6 +66,23 @@ def test_subtitle_confirmation_requires_manual_track(prepared_narrate_job):
     )
     assert confirmed["state"] == "applied"
     assert confirmed["subtitle"]["user_confirmed"] is True
+
+
+def test_narrate_applies_audio_clip_without_frame_metadata(
+    prepared_narrate_job,
+):
+    resolve, service = make_media_service(audio_frames="")
+    assert service.start(str(prepared_narrate_job))["state"] == "ready"
+    detail = service.apply_ready(
+        str(prepared_narrate_job),
+        confirm=lambda _: True,
+    )
+    assert detail["state"] == "awaiting_subtitle_import"
+    timeline = resolve.project.final_timelines[0]
+    assert (
+        timeline.audio_track_items[1][0].media_pool_item.GetName()
+        == "narration.wav"
+    )
 
 
 def test_declined_timeline_confirmation_keeps_ready(prepared_transcribe_job):
