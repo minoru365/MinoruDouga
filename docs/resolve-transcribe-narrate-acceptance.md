@@ -42,12 +42,12 @@
 uv run minoru-studio doctor --json
 ```
 
-- 実施日:
-- MinoruStudio commit:
-- Resolve product / version:
-- VOICEVOX loopback 稼働確認(バージョンのみ記録):
-- 破棄可能プロジェクト名 / project ID:
-- timeline frame rate:
+- 実施日: 2026-07-24
+- MinoruStudio commit: `f05744d`(受入中の修正2件を含む)
+- Resolve product / version: DaVinci Resolve 20.0.1.6
+- VOICEVOX loopback 稼働確認(バージョンのみ記録): 0.25.2(利用者が事前起動、127.0.0.1:50021)
+- 破棄可能プロジェクト名 / project ID: `MinoruStudio Acceptance 20260724` / `a867d31b-c7a2-4596-a1df-d1db0c03e2ed`
+- timeline frame rate: 24/1
 
 3. Git 管理外の破棄可能な日本語短尺動画と、人が記入・承認した短い日本語台本を
    用意し、事前ハッシュを記録する。
@@ -106,23 +106,31 @@ uv run minoru-studio transcribe .\disposable-source.mp4 -Name final-transcribe -
 
 | # | シナリオ | 合格条件 | 結果 | Notes |
 |---|---|---|---|---|
-| 1 | transcribe 単独preview | `preview.mp4` が Resolve なしで元動画の映像・音声+焼き込み字幕で再生できる | 未実行 | |
-| 2 | narrate 単独preview | `preview.mp4` が Resolve なしで元動画の映像+生成ナレーション+焼き込み字幕で再生できる | 未実行 | |
-| 3 | transcribe V1/A1 | 新規タイムラインの V1=元動画、A1=同じ元動画の音声 | 未実行 | |
-| 4 | narrate V1/A1 | 新規タイムラインの V1=元動画、A1=`outputs/narration.wav` | 未実行 | |
-| 5 | 開始位置 | V1/A1 とも record frame がタイムライン先頭(開始位置 0) | 未実行 | |
-| 6 | 手動字幕トラック | 手動インポートした SRT の字幕トラックが存在し Resolve 内で編集できる。確認後だけ `applied` | 未実行 | |
-| 7 | 非破壊 | sentinel・既存 bin/timeline が名前・内容とも不変 | 未実行 | |
-| 8 | 再適用 | 新 attempt が `<job name> Resolve-002` を新規作成し既存を再利用しない | 未実行 | |
-| 9 | script-draft 実動画 | 代表フレームと `script.md` テンプレートが生成される | 未実行 | |
-| 10 | 入力hash不変 | 元動画・台本の事前・事後 SHA-256 が一致 | 未実行 | |
+| 1 | transcribe 単独preview | `preview.mp4` が Resolve なしで元動画の映像・音声+焼き込み字幕で再生できる | 合格 | 2026-07-24。`final-transcribe-v2` の preview を利用者が再生確認 |
+| 2 | narrate 単独preview | `preview.mp4` が Resolve なしで元動画の映像+生成ナレーション+焼き込み字幕で再生できる | 合格 | 2026-07-24。ずんだもん/ノーマル実音声。`final-narrate-v2` |
+| 3 | transcribe V1/A1 | 新規タイムラインの V1=元動画、A1=同じ元動画の音声 | 合格 | attempt `079dd5e8`。`video_key=source-video` / `audio_key=source-audio`。目視+JSON |
+| 4 | narrate V1/A1 | 新規タイムラインの V1=元動画、A1=`outputs/narration.wav` | 合格 | attempt `ea5ccb42`。`audio_key=narration-audio`。目視+JSON |
+| 5 | 開始位置 | V1/A1 とも record frame がタイムライン先頭(開始位置 0) | 合格 | 両ジョブ `record_frame=86400`(24fps プロジェクトの開始 01:00:00:00) |
+| 6 | 手動字幕トラック | 手動インポートした SRT の字幕トラックが存在し Resolve 内で編集できる。確認後だけ `applied` | 合格 | 両ジョブとも手動 SRT import → `subtitle_tracks=1`、`user_confirmed=True`、`applied`。編集可能を目視確認 |
+| 7 | 非破壊 | sentinel・既存 bin/timeline が名前・内容とも不変 | 合格 | `SENTINEL-DO-NOT-TOUCH` 不変を目視確認。既存 timeline/bin 非変更 |
+| 8 | 再適用 | 新 attempt が `<job name> Resolve-002` を新規作成し既存を再利用しない | 合格 | attempt `87f745a8` が `final-transcribe-v2 Resolve-002` を新規作成。元 timeline 残存。仕様8.6どおり checkpoint で終了 |
+| 9 | script-draft 実動画 | 代表フレームと `script.md` テンプレートが生成される | 合格 | `final-script-draft-v2`: frame-png ×5、frame-index-json、script-markdown |
+| 10 | 入力hash不変 | 元動画・台本の事前・事後 SHA-256 が一致 | 合格 | 元動画・切り出し素材・台本の3ファイルとも before == after |
 
 ## 実行記録
 
-- 実行状態: 未実行
-- 実施日: 未実行
-- attempt / bin / timeline ID の証跡: 未実行
-- 失敗・中止時の category: 未実行
+- 実行状態: 全10項目合格(2026-07-24、利用者立ち会い)
+- 実施日: 2026-07-24
+- attempt / bin / timeline ID の証跡:
+  - transcribe 適用: attempt `079dd5e8-10ab-475c-a319-2fa5ba0e223b`、timeline `final-transcribe-v2 Resolve` (`3dd83d9e-fb19-4ba3-9de3-69e7594cf903`)、applied
+  - narrate 適用: attempt `ea5ccb42-1dea-48d7-9be5-47f9f21f966c`、timeline `final-narrate-v2 Resolve` (`29caa415-7474-4ba2-8f2c-b04845ff2c74`)、applied
+  - 再適用: attempt `87f745a8-1e8f-41db-b1ac-c2141e276f03`、timeline `final-transcribe-v2 Resolve-002` (`619f14c5-2940-43ef-a112-5f98d9ba2f8f`)、awaiting_subtitle_import(仕様8.6の確認範囲で意図的に終了)
+  - 各 attempt の詳細は各 job の `resolve/applications/<attempt-id>.json` と `logs/resolve.log`
+- 失敗・中止時の category と対処(いずれも解消済み):
+  1. narrate `VOICEVOX unavailable` — クライアントが `http.client` に `headers=None` を渡す不具合。修正 `a6209bd`(回帰テスト付き)。
+  2. narrate preview `preview` (duration mismatch) — 受入素材 `230823_00.mp4` が約25.6秒地点で H.264 破損(コンテナ表記148.8秒)しており、製品の preview 検証が正しく拒否。元ファイルは変更せず、デコード可能な先頭25秒を新規破棄可能ファイル `source-25s.mp4` に再エンコードして受入素材とした。
+  3. narrate Resolve staging `imported media frame count must be positive` — 実機 Resolve は音声のみクリップに `Frames` プロパティを持たないため staging が拒否。映像のみ frame 数必須とし、frame 数不明の音声はクリップ全体配置に修正 `f05744d`(回帰テスト付き)。修正前の failed attempt `0d26f5b1` / `5f7ebdd5` は証跡として残存。
+- アダプター導入: `install.ps1` を受入前と修正後に実行。導入コピーと repo の全 .py ハッシュ一致を確認。`MinoruDouga.py` は SHA-256 `104FADBC…B3BB`・更新時刻とも不変。
 
 証跡収集は [Resolve beat-sync 受入記録](resolve-beat-sync-acceptance.md) の
 「ソース素材を含めず証跡を収集する」と同じ方式を使い、素材・台本・字幕・音声の

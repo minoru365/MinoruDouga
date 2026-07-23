@@ -25,9 +25,9 @@
 | 共通基盤、CLI、GUI、ジョブ、ログ、再開、doctor | 完了 | README、foundation plan |
 | `beat-sync` とResolveアダプター | 完了 | Resolve受入記録 |
 | `transcribe` のローカル文字起こし、TXT/SRT/VTT、任意preview | 完了 | 文字起こし受入記録 |
-| `script-draft` | 実装・機械確認済み。実動画のまとめて受入待ち | 総合設計 7.4 |
-| `narrate` | 実装・機械確認済み。VOICEVOX実音声・実previewのまとめて受入待ち | 総合設計 7.3、11.2 |
-| `transcribe` / `narrate` のResolve適用 | 実装済み。実機まとめて受入待ち。Resolveなしの `preview.mp4` は独立した完成経路として維持し、Resolveは微修正したい時だけ使う任意編集経路 | [`superpowers/specs/2026-07-23-resolve-final-design.md`](superpowers/specs/2026-07-23-resolve-final-design.md)、[`superpowers/plans/2026-07-23-resolve-final-integration.md`](superpowers/plans/2026-07-23-resolve-final-integration.md)、[`resolve-transcribe-narrate-acceptance.md`](resolve-transcribe-narrate-acceptance.md) |
+| `script-draft` | 完了。実動画受入済み(2026-07-24) | 総合設計 7.4、[`resolve-transcribe-narrate-acceptance.md`](resolve-transcribe-narrate-acceptance.md) |
+| `narrate` | 完了。VOICEVOX実音声・実preview受入済み(2026-07-24) | 総合設計 7.3、11.2、[`resolve-transcribe-narrate-acceptance.md`](resolve-transcribe-narrate-acceptance.md) |
+| `transcribe` / `narrate` のResolve適用 | 完了。実機まとめて受入済み(2026-07-24)。Resolveなしの `preview.mp4` は独立した完成経路として維持し、Resolveは微修正したい時だけ使う任意編集経路 | [`superpowers/specs/2026-07-23-resolve-final-design.md`](superpowers/specs/2026-07-23-resolve-final-design.md)、[`superpowers/plans/2026-07-23-resolve-final-integration.md`](superpowers/plans/2026-07-23-resolve-final-integration.md)、[`resolve-transcribe-narrate-acceptance.md`](resolve-transcribe-narrate-acceptance.md) |
 
 ## 実装順序と担当境界
 
