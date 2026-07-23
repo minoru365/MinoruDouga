@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Apply successful `transcribe` and `narrate` jobs to new, editable DaVinci Resolve timelines without changing beat-sync, then execute the approved local consolidated acceptance.
+**Goal:** Keep preview MP4 as a standalone delivery route for successful `transcribe`/`narrate` video jobs, while adding an optional new editable DaVinci Resolve timeline route without changing beat-sync, then execute the approved local consolidated acceptance.
 
-**Architecture:** Preserve the beat-sync-only `AdapterService` and `load_validated_job()` path. Add a strict media contract plus a separate `MediaPlacementService`; it reuses the existing gateway, attempt store, locking, non-destructive names, and Tk Utility. It stages verified source media, creates V1/A1 at record frame zero, then pauses until the user imports the verified SRT through Resolve’s standard UI.
+**Architecture:** Preserve the existing `-Preview` renderer as the Resolve-free, viewable MP4 route: it uses source visuals, the selected audio, and burned-in captions. Preserve the beat-sync-only `AdapterService` and `load_validated_job()` path. Add a strict media contract plus a separate `MediaPlacementService`; it reuses the existing gateway, attempt store, locking, non-destructive names, and Tk Utility, but deliberately stages source media rather than preview.mp4. It creates V1/A1 at record frame zero, then pauses until the user imports the verified SRT through Resolve’s standard UI.
 
 **Tech Stack:** Python 3.12, uv, pytest, DaVinci Resolve in-process Python API, Tkinter, local FFmpeg/faster-whisper/VOICEVOX.
 
@@ -16,6 +16,7 @@
 - Before Resolve mutation, rehash every manifest input and required artifact. Reject escaped paths, directories, missing/bad size/hash, and unsupported media.
 - Product time remains integer milliseconds; Resolve frame conversion stays inside the existing gateway.
 - Transcribe puts source video on V1 and the same verified source on A1. Narrate puts source video on V1 and verified `outputs/narration.wav` on A1. Both begin at record frame 0.
+- A video job has two valid outcomes: `-Preview` produces a standalone MP4 with burned-in captions for viewing/distribution; optional Resolve application uses the original source/WAV/SRT for editable fine adjustment. Preview.mp4 is never Resolve placement input.
 - Subtitle placement is manual standard SRT import only. Do not call `CreateSubtitlesFromAudio`, generate subtitle clips, or use preview media in place of source media.
 - UI/log/error text must not include script, transcript, or SRT cue content. IDs, hashes, paths, names, rates, and fixed labels are allowed metadata.
 - Real acceptance uses only a newly created disposable Resolve project. No final render, external send, deletion, or non-local service is in scope.
@@ -508,13 +509,13 @@ Expected: pass; current beat-sync labels and confirmation stay unchanged.
 
 - [ ] **Step 1: Create expected-result table first**
 
-Create the runbook sections `目的`, `安全条件`, `事前確認`, `実行手順`, `期待結果`, `実行記録`. Its table lists: transcribe V1/source A1; narrate V1/narration A1; record frame zero; editable manual subtitle track; sentinel/existing bin/timeline unchanged; `-002`; real-video script-draft; actual VOICEVOX narrate preview; unchanged source hash. Every cell begins `未実行`.
+Create the runbook sections `目的`, `安全条件`, `事前確認`, `実行手順`, `期待結果`, `実行記録`. Its table lists: standalone transcribe preview with source audio and burned captions; standalone narrate preview with narration and burned captions; transcribe V1/source A1; narrate V1/narration A1; record frame zero; editable manual subtitle track; sentinel/existing bin/timeline unchanged; `-002`; real-video script-draft; unchanged source hash. Every cell begins `未実行`.
 
 - [ ] **Step 2: Document the bounded Resolve workflow**
 
 After transcribe in `README.md`, add `## Resolveで文字起こし・読み上げを適用する`:
 
-1. Select successful video transcribe/narrate job in **ワークスペース → スクリプト → MinoruStudio**.
+1. For a standalone deliverable, create `preview.mp4` with `-Preview` (or the GUI preview selection); Resolve is not required for this route. Select successful video transcribe/narrate job in **ワークスペース → スクリプト → MinoruStudio** only when editable fine adjustment is wanted.
 2. Transcribe gets V1 source and A1 source; narrate gets V1 source and A1 `outputs/narration.wav`.
 3. Utility creates `<job name> Resolve` or `-002`; it never renders/replaces/deletes existing timeline.
 4. Manually import the displayed verified `outputs/subtitles.srt` through standard Resolve UI; check editable subtitle track; rerun Utility and click `字幕読み込みを確認`.
@@ -611,7 +612,7 @@ Run doctor, capture versions, source/artifact hashes, job/attempt/timeline IDs/n
 
 - [ ] **Step 3: Run three local preparation flows**
 
-Use short disposable video with Task 5 commands. Inspect manifest status/artifact metadata only and compare source hashes. If a local dependency is missing, stop and record error; do not install or widen scope without user direction.
+Use short disposable video with Task 5 commands. First play each generated preview.mp4 outside Resolve and verify the intended audio plus burned-in captions; then inspect manifest status/artifact metadata only and compare source hashes. If a local dependency is missing, stop and record error; do not install or widen scope without user direction.
 
 - [ ] **Step 4: Apply both jobs in Resolve with manual SRT import**
 
@@ -642,4 +643,3 @@ Plan complete and saved to `docs/superpowers/plans/2026-07-23-resolve-final-inte
 2. **Inline Execution** — execute tasks in this session in bounded batches with review checkpoints.
 
 Choose one approach before implementation begins.
-

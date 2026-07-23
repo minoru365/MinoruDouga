@@ -2,13 +2,14 @@
 
 ## 1. 目的
 
-`transcribe` と `narrate` の成功済みジョブを、DaVinci Resolve 無償版の新規かつ編集可能なタイムラインへ安全に配置できるようにする。併せて、未受入の `script-draft` 実動画、`narrate` 実音声／preview、`transcribe`／`narrate` の Resolve 配置を、破棄可能な素材とプロジェクトで一括受入する。
+`transcribe` と `narrate` は Resolve なしでも確認用 MP4 を完成成果物として使え、こだわった微修正が必要なときだけ DaVinci Resolve 無償版の新規かつ編集可能なタイムラインへ安全に配置できるようにする。併せて、未受入の `script-draft` 実動画、`narrate` 実音声／preview、`transcribe`／`narrate` の Resolve 配置を、破棄可能な素材とプロジェクトで一括受入する。
 
 ## 2. スコープと非対象
 
 ### スコープ
 
 - 既存 Resolve Utility の同一 UI から、成功済み `transcribe`／`narrate` ジョブを選択・検証・配置する。
+- 動画入力の `transcribe -Preview` と `narrate -Preview` は、Resolve を起動せずに視聴・配布できる確認用 `preview.mp4` を作る。`transcribe` は元動画の映像・音声、`narrate` は元動画の映像と生成済みナレーションを使い、生成済み SRT を映像へ焼き込む。
 - `transcribe` は元動画を V1 と A1 に、`narrate` は元動画を V1、生成済み `narration.wav` を A1 に、タイムライン開始位置へ配置する。
 - 生成済み `subtitles.srt` を Resolve 標準 UI で手動インポートする中間状態を管理し、字幕トラックの存在と明示確認後に適用完了を記録する。
 - 既存 `beat-sync` のアダプター契約・状態遷移・配置結果を保持する。
@@ -19,6 +20,7 @@
 - SRT の字幕クリップを Resolve API だけで自動作成・自動配置すること。インストール済み API は字幕トラック操作を持つが、既存 SRT の字幕項目を作成する API を提供しない。
 - `CreateSubtitlesFromAudio` による再認識。既存 SRT の内容・時刻と一致しない可能性があるため使わない。
 - preview MP4 を最終タイムラインの代替として配置すること。焼き込み字幕は編集可能でないため使わない。
+- MP4 内にオン・オフ可能な字幕ストリームを追加すること。単独視聴用 preview の字幕は互換性を優先して焼き込みとし、編集可能な字幕は Resolve 側の手動 SRT インポートで扱う。
 - 自動レンダー、既存 timeline/bin の削除、Resolve プロジェクトのロールバック、外部送信、VOICEVOX の自動起動。
 - `script-draft` の Resolve 配置または AI 台本化。
 
@@ -28,7 +30,13 @@ Resolve Utility はジョブの `mode` を検証して、既存の beat-sync 経
 
 `beat-sync` の `load_validated_job`、still 測定、In/Out 再開、青 marker、BGM 配置を変更しない。新しい経路は別の正規化済み配置入力を作り、beat-sync 固有の `plan`、BPM、still、素材ローテーションを参照しない。
 
-### 3.1 配置入力
+### 3.1 Resolve を使わない完成経路
+
+`preview.mp4` は Resolve 用の中間ファイルではなく、Resolve を使わずに確認・配布するための独立した完成成果物とする。利用者は `-Preview` または GUI の preview 選択で生成し、必要な場合だけ Resolve 適用へ進む。preview は既存の入力・WAV・SRT/VTT を読み取り専用で使用し、既存成果物を上書きしない。
+
+字幕は preview の映像に焼き込まれるため、その MP4 単体でナレーション／元音声と同期して視聴できる。一方、字幕を文言・タイミング・見た目まで調整したい利用者は、同じ job の元動画、`narration.wav`、SRT を Resolve 経路で使う。Resolve アダプターは preview.mp4 を素材として import しない。
+
+### 3.2 配置入力
 
 新経路が受け入れるのは `status: succeeded` の次のジョブだけである。
 
@@ -39,7 +47,7 @@ Resolve Utility はジョブの `mode` を検証して、既存の beat-sync 経
 
 アダプターは manifest の全 input fingerprint を再計算する。成果物は manifest の記録から、相対パス containment、size、SHA-256、通常ファイルであることを検証する。`transcribe` は元入力に Resolve が読み込める映像・音声が必要である。`narrate` は映像入力と `narration.wav` が必要で、元動画の音声は配置しない。検証失敗は bin/timeline を作る前に安定した adapter error で停止する。
 
-### 3.2 新規 timeline と bin
+### 3.3 新規 timeline と bin
 
 各適用 attempt は `_MinoruStudio <job-name> Resolve <attempt-id>` の専用 bin を作る。新規 timeline の基底名は `<job-name> Resolve` とし、既存名と衝突すると `-002`、`-003` を付ける。既存 timeline と bin を選択、再利用、上書き、削除しない。
 
@@ -104,3 +112,4 @@ Fake Resolve を拡張し、次を検証する。
 - 各 timeline は user-imported SRT を含む字幕 track を持ち、字幕を Resolve 内で編集できる。
 - input/manifest/artifact 改ざん、subtitle track 不在、既存 timeline 名衝突、途中失敗は非破壊に停止または再開する。
 - `script-draft` の代表フレームとテンプレート、`narrate` の ずんだもん実音声・SRT/VTT・preview、全 adapter テスト、最後の全自動 suite、doctor が確認済みである。
+- `transcribe -Preview` と `narrate -Preview` の preview.mp4 は、それぞれ Resolve を起動せずに映像・選択された音声・焼き込み字幕を再生でき、入力 hash を変えない。
