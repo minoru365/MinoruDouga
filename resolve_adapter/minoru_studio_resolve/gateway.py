@@ -214,6 +214,161 @@ class ResolveGateway(object):
             raise GatewayError("recorded media item identity is ambiguous")
         return result
 
+    def import_media_sources(self, sources, bin_detail):
+        media_pool = self._media_pool()
+        folder = self.application_bin(bin_detail)
+        if not media_pool.SetCurrentFolder(folder):
+            raise GatewayError("cannot select Resolve application bin")
+        expected = []
+        keys = set()
+        for source in sources:
+            if not isinstance(source, dict):
+                raise GatewayError("media source must be an object")
+            key = str(source.get("key") or "").strip()
+            path = str(source.get("path") or "").strip()
+            kind = source.get("kind")
+            if not key or not path:
+                raise GatewayError("media source role is incomplete")
+            if kind not in ("video", "audio"):
+                raise GatewayError("media source kind must be video or audio")
+            if key in keys:
+                raise GatewayError("duplicate media source role")
+            keys.add(key)
+            expected.append({"key": key, "kind": kind, "path": path})
+        if not expected:
+            raise GatewayError("media placement requires sources")
+        unique = []
+        seen = set()
+        for source in expected:
+            normalized = _normalized_path(source["path"])
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append({"path": source["path"]})
+        matched = self._match_imports(
+            unique,
+            self._import_group(
+                media_pool,
+                [value["path"] for value in unique],
+            ),
+        )
+        by_path = {
+            _normalized_path(value["path"]): item
+            for value, item in matched
+        }
+        details = []
+        for source in expected:
+            item = by_path[_normalized_path(source["path"])]
+            frames = item.GetClipProperty("Frames")
+            try:
+                frames = int(frames)
+            except (TypeError, ValueError):
+                frames = 0
+            if frames <= 0:
+                raise GatewayError(
+                    "imported media frame count must be positive"
+                )
+            details.append(
+                {
+                    "key": source["key"],
+                    "kind": source["kind"],
+                    "id": _required_id(item.GetUniqueId(), "media item"),
+                    "path": os.path.realpath(source["path"]),
+                    "frames": frames,
+                    "fps": str(item.GetClipProperty("FPS") or ""),
+                }
+            )
+        return details
+
+    def find_media_items(self, bin_detail, item_details):
+        folder = self.application_bin(bin_detail)
+        found = {}
+        for nested in self._walk_folders(folder):
+            for item in (nested.GetClipList() or []):
+                item_id = _required_id(item.GetUniqueId(), "media item")
+                if item_id in found:
+                    raise GatewayError(
+                        "duplicate media item ID in application bin"
+                    )
+                found[item_id] = item
+        result = {}
+        for detail in item_details:
+            key = str(detail.get("key") or "")
+            if not key or key in result:
+                raise GatewayError("recorded media role is invalid")
+            item_id = str(detail.get("id") or "")
+            if item_id not in found:
+                raise GatewayError("recorded media item is missing")
+            result[key] = found[item_id]
+        return result
+
+    def place_media_timeline(self, timeline, items, validated):
+        media_pool = self._media_pool()
+        mode = validated.get("mode")
+        if mode == "transcribe":
+            audio_key = "source-audio"
+        elif mode == "narrate":
+            audio_key = "narration-audio"
+        else:
+            raise GatewayError("unsupported media placement mode")
+        video_key = "source-video"
+        record_frame = int(timeline.GetStartFrame())
+        for key, media_type, label in (
+            (video_key, 1, "source video"),
+            (audio_key, 2, "placement audio"),
+        ):
+            item = items.get(key)
+            if item is None:
+                raise GatewayError(
+                    "recorded {0} item is missing".format(label)
+                )
+            try:
+                frames = int(item.GetClipProperty("Frames"))
+            except (TypeError, ValueError):
+                raise GatewayError(
+                    "{0} frame count is invalid".format(label)
+                )
+            if frames <= 0:
+                raise GatewayError(
+                    "{0} frame count must be positive".format(label)
+                )
+            self._append(
+                media_pool,
+                timeline,
+                {
+                    "mediaPoolItem": item,
+                    "startFrame": 0,
+                    "endFrame": frames - 1,
+                    "mediaType": media_type,
+                    "trackIndex": 1,
+                    "recordFrame": record_frame,
+                },
+                label,
+            )
+        return {
+            "video_key": video_key,
+            "audio_key": audio_key,
+            "record_frame": record_frame,
+        }
+
+    def timeline_by_id(self, timeline_id):
+        project = self._project()
+        for index in range(1, int(project.GetTimelineCount()) + 1):
+            timeline = project.GetTimelineByIndex(index)
+            if timeline and str(timeline.GetUniqueId()) == str(timeline_id):
+                return timeline
+        raise GatewayError("recorded final timeline is missing")
+
+    def subtitle_track_count(self, timeline):
+        value = timeline.GetTrackCount("subtitle")
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            raise GatewayError("subtitle track count is invalid")
+        if count < 0:
+            raise GatewayError("subtitle track count is invalid")
+        return count
+
     def read_source_windows(self, item_details, items):
         windows = []
         for detail in item_details:

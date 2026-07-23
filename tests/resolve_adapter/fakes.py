@@ -87,9 +87,25 @@ class FakeTimeline:
         self.markers = []
         self.audio_track_items = {1: []}
         self.video_track_items = {1: []}
+        self.subtitle_track_count = 0
 
     def GetUniqueId(self):
         return self.timeline_id
+
+    def AddTrack(self, track_type):
+        if track_type != "subtitle":
+            return False
+        self.subtitle_track_count += 1
+        return True
+
+    def GetTrackCount(self, track_type):
+        if track_type == "subtitle":
+            return self.subtitle_track_count
+        if track_type == "video":
+            return len(self.video_track_items)
+        if track_type == "audio":
+            return len(self.audio_track_items)
+        return 0
 
     def GetName(self):
         return self.name
