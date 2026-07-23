@@ -114,6 +114,49 @@ uv run minoru-studio doctor --json
 
 実モデル受入の内容は [文字起こし受入記録](docs/transcribe-acceptance.md) に記録しています。
 
+## 読み上げ（narrate）
+
+人が承認した台本から、ローカル VOICEVOX でナレーション音声と字幕を生成します。
+VOICEVOX は利用者が事前に起動しておくローカル HTTP API（`127.0.0.1:50021`）だけを
+使用し、MinoruStudio と Resolve アダプターが VOICEVOX を起動することはありません。
+外部サービスへの送信も行いません。
+
+```powershell
+uv run minoru-studio narrate .\sample.mp4 `
+  -Script .\approved-script.txt `
+  -Name demo-narrate `
+  -OutputDir .\jobs `
+  -Preview
+
+uv run minoru-studio narrate resume .\jobs\demo-narrate.media-job
+```
+
+成功すると `.media-job/outputs/` に `narration.wav`、`subtitles.srt`、
+`subtitles.vtt`、および video 入力で `-Preview` を指定した場合の `preview.mp4` が
+作られます。
+
+## Resolveで文字起こし・読み上げを適用する
+
+単独で視聴・配布できる成果物が目的なら、`-Preview`（または GUI の preview 選択）で
+`preview.mp4` を作れば完結します。この経路に Resolve は不要です。字幕の文言・
+タイミング・見た目まで編集したい場合だけ、次の任意編集経路を使います。
+
+1. **ワークスペース → スクリプト → MinoruStudio** で、成功済みの video
+   `transcribe` / `narrate` ジョブを選択します。
+2. 配置内容はモードごとに固定です。`transcribe` は V1=元動画、A1=同じ元動画の
+   音声。`narrate` は V1=元動画、A1=`outputs/narration.wav`。
+3. Utility は `<job name> Resolve`（既存名と衝突する場合は `-002`）の新規
+   タイムラインを作ります。既存タイムラインのレンダー・置換・削除は行いません。
+4. 案内に表示される検証済み `outputs/subtitles.srt` を Resolve 標準UIで字幕
+   トラックへ手動インポートし、編集可能なことを確認したら、Utility を再実行して
+   `字幕読み込みを確認` を押します。
+5. アダプターは字幕の自動生成（`CreateSubtitlesFromAudio` 等）を行わず、
+   `preview.mp4` を配置素材として使いません。
+
+実機受入の手順と記録は
+[Resolve transcribe/narrate 受入記録](docs/resolve-transcribe-narrate-acceptance.md)
+を参照してください。
+
 ## 基盤コマンド
 
 ```powershell
