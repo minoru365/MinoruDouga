@@ -35,7 +35,7 @@
 
 - `tests/jobs/test_model.py` は有効な固定モード集合に `repo-demo` が含まれないことを確認する。
 - `tests/test_gui_controller.py` は存続するモードで既存の汎用ジョブ作成・検査を確認する。
-- `rg -n -i "repo-demo|repo demo|デモ組み立て" README.md docs/agent-handoff.md docs/media-automation-design.md src tests` が、履歴文書以外で一致しないことを確認する。
+- `rg -n -i "repo-demo|repo demo|デモ組み立て" README.md docs/agent-handoff.md docs/media-automation-design.md src/minoru_studio` が一致しないことを確認する。廃止値を拒否する負の回帰テストと、文書撤去を検査するテスト内の文字列は許容する。
 - `uv run pytest -q` と `uv run minoru-studio doctor --json` を実行し、既存モードに回帰がないことを確認する。
 
 ## 受入条件
