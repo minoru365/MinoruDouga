@@ -11,9 +11,12 @@ Windows向けローカル動画制作ツールです。MinoruDouga(音ハメ単�
 - **読み上げ(narrate)** — 人が承認した台本から、ローカル VOICEVOX で
   ナレーション音声と字幕を生成
 
-各処理は入力と結果を `.media-job` として確定させ、Resolve内アダプターから
-新しいタイムラインとして安全に適用できます(既存タイムラインは上書きしません)。
-無償版 Resolve でも動作します。
+成果物は2通りに使えます。字幕・ナレーションを合成済みの `preview.mp4` を
+**そのまま出力して完結**させるか、動画編集ソフト
+[DaVinci Resolve](https://www.blackmagicdesign.com/jp/products/davinciresolve)
+(無償版で動作)へ**通常のタイムラインとして適用**して細部を微修正するかを
+選べます。各処理は入力と結果を `.media-job` として確定させ、Resolve適用時も
+既存タイムラインは上書きしません。
 
 ## デモ
 
@@ -26,6 +29,14 @@ Windows向けローカル動画制作ツールです。MinoruDouga(音ハメ単�
 
 ナレーション音声付きの完全版(25秒):
 [img/demo-narrate.mp4](img/demo-narrate.mp4)
+
+### DaVinci Resolveで微修正する
+
+`preview.mp4` で完結させる代わりに、ジョブを DaVinci Resolve へ適用すると
+通常のタイムラインが生成されます。字幕は字幕トラックのクリップになるため、
+文言・タイミング・見た目を Resolve の標準UIでそのまま編集できます。
+
+![Resolveに適用したタイムライン。文字起こしの字幕が字幕トラックのクリップとして並び、標準UIで編集できる](img/demo-resolve-timeline.png)
 
 ## 開発環境
 
