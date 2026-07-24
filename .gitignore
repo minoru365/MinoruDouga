@@ -1,6 +1,3 @@
-# 実行ログ(実行のたびに追記される)
-minoru_douga.log
-
 # Python キャッシュ
 __pycache__/
 *.py[cod]

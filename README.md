@@ -116,7 +116,7 @@ uv run minoru-studio transcribe resume .\jobs\demo-transcribe.media-job
 ```
 
 引数なし GUI (`uv run minoru-studio`) ではモードを `transcribe` にして、入力動画・
-音声、model（`small` / `medium`）、language、音量正規化、ノイズ軽減、字幕付き
+音声、model(`small` / `medium`)、language、音量正規化、ノイズ軽減、字幕付き
 preview を選択します。失敗または中断した job は同じ画面で開いて再開できます。
 
 成功すると `.media-job/outputs/` に `transcript.txt`、`subtitles.srt`、
@@ -135,10 +135,10 @@ uv run minoru-studio doctor --json
 
 実モデル受入の内容は [文字起こし受入記録](docs/transcribe-acceptance.md) に記録しています。
 
-## 読み上げ（narrate）
+## 読み上げ(narrate)
 
 人が承認した台本から、ローカル VOICEVOX でナレーション音声と字幕を生成します。
-VOICEVOX は利用者が事前に起動しておくローカル HTTP API（`127.0.0.1:50021`）だけを
+VOICEVOX は利用者が事前に起動しておくローカル HTTP API(`127.0.0.1:50021`)だけを
 使用し、MinoruStudio と Resolve アダプターが VOICEVOX を起動することはありません。
 外部サービスへの送信も行いません。
 
@@ -158,7 +158,7 @@ uv run minoru-studio narrate resume .\jobs\demo-narrate.media-job
 
 ## Resolveで文字起こし・読み上げを適用する
 
-単独で視聴・配布できる成果物が目的なら、`-Preview`（または GUI の preview 選択）で
+単独で視聴・配布できる成果物が目的なら、`-Preview`(または GUI の preview 選択)で
 `preview.mp4` を作れば完結します。この経路に Resolve は不要です。字幕の文言・
 タイミング・見た目まで編集したい場合だけ、次の任意編集経路を使います。
 
@@ -166,12 +166,12 @@ uv run minoru-studio narrate resume .\jobs\demo-narrate.media-job
    `transcribe` / `narrate` ジョブを選択します。
 2. 配置内容はモードごとに固定です。`transcribe` は V1=元動画、A1=同じ元動画の
    音声。`narrate` は V1=元動画、A1=`outputs/narration.wav`。
-3. Utility は `<job name> Resolve`（既存名と衝突する場合は `-002`）の新規
+3. Utility は `<job name> Resolve`(既存名と衝突する場合は `-002`)の新規
    タイムラインを作ります。既存タイムラインのレンダー・置換・削除は行いません。
 4. 案内に表示される検証済み `outputs/subtitles.srt` を Resolve 標準UIで字幕
    トラックへ手動インポートし、編集可能なことを確認したら、Utility を再実行して
    `字幕読み込みを確認` を押します。
-5. アダプターは字幕の自動生成（`CreateSubtitlesFromAudio` 等）を行わず、
+5. アダプターは字幕の自動生成(`CreateSubtitlesFromAudio` 等)を行わず、
    `preview.mp4` を配置素材として使いません。
 
 実機受入の手順と記録は
@@ -194,94 +194,6 @@ uv run minoru-studio
 Resolveへ適用するときは、準備済みjobを選んで必ず最終確認を承認します。
 途中のIn/Out設定やスチル長変更が必要な場合は状態をjobへ保存し、次のUtility
 呼び出しから再開します。
-
----
-
-## Legacy fallback
-
-既存のMinoruDougaは自動アンインストールされません。導入済み環境では、従来の
-**ワークスペース → スクリプト → MinoruDouga** も引き続き利用できます。
-
-### MinoruDouga 🎵🎬
-
-写真・動画・音楽を渡すと、曲のビートに合わせてテンポよくカットした
-タイムラインを DaVinci Resolve 上に自動生成するツール。
-生成後は普通のタイムラインなので、そのまま Resolve で微調整できる。
-
-![MinoruDouga の実行画面](img/editsample.png)
-
-> 設定ダイアログで音楽・素材フォルダ・カット間隔を指定すると、ビートに
-> 合わせてカットされたタイムラインが生成される(各カット位置に青マーカー)。
-
-### 仕組み
-
-```
-音楽ファイル ──→ analyze_beats.py (librosa でビート解析・システム Python)
-                        │ beats.json
-                        ▼
-Resolve スクリプトメニュー ──→ minoru_douga.py
-   ├ 素材フォルダの写真・動画をメディアプールにインポート
-   ├ 拍位置でカット境界を計算(N拍ごと)
-   ├ V1 に素材を順番/ランダムに配置(動画は使用箇所を自動でずらす)
-   ├ A1 に音楽を配置
-   └ 各カット位置にマーカーを追加
-```
-
-無償版 Resolve でも動く(外部からの API 操作ではなく、Resolve 内の
-スクリプトメニューから実行する方式のため)。
-
-### セットアップ
-
-現在の `.\install.ps1` はMinoruStudioを配置します。既存の
-`MinoruDouga.py` は削除・上書きしないため、導入済み環境のlegacy fallbackは
-そのまま残ります。
-
-### 使い方
-
-1. 素材(写真・動画)を 1 つのフォルダにまとめる
-2. Resolve でプロジェクトを開く
-3. メニュー **ワークスペース → スクリプト → MinoruDouga**
-4. ダイアログで音楽ファイル・素材フォルダ・カット間隔(N拍ごと)を指定して「タイムライン生成」
-
-ログは **ワークスペース → コンソール** に出る。
-
-### オプション
-
-| 項目 | 説明 |
-|---|---|
-| カット間隔 | 何拍ごとに切り替えるか。「自動」は全素材がほぼ一巡する間隔を計算 |
-| 並び順 | ファイル名 昇順 / ランダム |
-
-### 動画のハイライト指定
-
-使ってほしい場面がある動画は、実行前に **メディアプールでダブルクリック →
-ソースビューアでその場面の頭に In 点(`I`)を打つだけ**でよい。
-長さはスクリプトが拍数に合わせて自動で決めるので Out 点は不要。
-Out 点(`O`)も打った場合は「この範囲の中だけを使う」という制限になる。
-未指定の動画は全体から順繰りに使われる。
-
-設定は `%APPDATA%\MinoruDouga\settings.json` に記憶される。
-
-### 注意・既知の制限
-
-- **対応音楽形式**: wav / flac / mp3 / ogg。m4a・aac は ffmpeg が必要
-  (`winget install Gyan.FFmpeg`)
-- **写真の表示時間**: Resolve の環境設定「標準スチルの長さ」(環境設定 →
-  ユーザー → 編集 → 一般設定)がスロット長より短いと写真を引き伸ばせない。
-  実行時に自動チェックし、足りない場合は変更手順をダイアログで案内する
-- **Resolve の Python**: Resolve はシステムの Python 3 を使う。メニューに
-  スクリプトが出ない・動かない場合は Resolve が Python を認識しているか確認
-  (Preferences → System → General の Script 設定)
-- クリップが毎回 1 フレームずれる場合は `src/minoru_douga.py` の
-  `END_FRAME_INCLUSIVE` を反転させる
-
-### 開発メモ
-
-- 本体: [src/minoru_douga.py](src/minoru_douga.py) — ランチャー経由で毎回 reload されるので、編集が即反映される
-- ビート解析: [src/analyze_beats.py](src/analyze_beats.py) — 単体でも実行可能
-- 設計の全体像と判断の背景は [ARCHITECTURE.md](ARCHITECTURE.md) を参照
-- 今後の拡張候補: 曲の盛り上がり(RMS/オンセット強度)に応じた緩急カット、
-  ハイライト区間の自動検出、トランジション自動挿入
 
 ## ライセンス
 
