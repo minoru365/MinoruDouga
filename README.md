@@ -29,6 +29,7 @@ Windows向けローカル動画制作ツールです。MinoruDouga(音ハメ単�
 
 ナレーション音声付きの完全版(25秒):
 [img/demo-narrate.mp4](img/demo-narrate.mp4)
+(デモのナレーション音声: VOICEVOX:ずんだもん)
 
 ### DaVinci Resolveで微修正する
 
@@ -210,5 +211,11 @@ Resolveへ適用するときは、準備済みjobを選んで必ず最終確認�
 
 ## ライセンス
 
-[MIT License](LICENSE)。依存ライブラリ(numpy / soundfile = BSD 3-Clause、
-librosa = ISC)はいずれも寛容型ライセンス。
+[MIT License](LICENSE)。直接依存の faster-whisper(MIT)と librosa(ISC)は
+いずれも寛容型ライセンスです。
+
+FFmpeg・VOICEVOX・DaVinci Resolve は利用者が各自インストールする外部
+ソフトウェアで、本リポジトリには同梱していません。VOICEVOX で生成した
+音声を公開する場合は、[VOICEVOX 利用規約](https://voicevox.hiroshiba.jp/term/)
+に従い「VOICEVOX:キャラクター名」のクレジット表記と、各音声ライブラリの
+規約の確認が必要です。
