@@ -144,14 +144,20 @@ uv run minoru-studio transcribe --help
 uv run minoru-studio doctor --json
 ```
 
-実モデル受入の内容は [文字起こし受入記録](docs/transcribe-acceptance.md) に記録しています。
-
 ## 読み上げ(narrate)
 
 人が承認した台本から、ローカル VOICEVOX でナレーション音声と字幕を生成します。
 VOICEVOX は利用者が事前に起動しておくローカル HTTP API(`127.0.0.1:50021`)だけを
 使用し、MinoruStudio と Resolve アダプターが VOICEVOX を起動することはありません。
 外部サービスへの送信も行いません。
+
+この仕様は次の3原則に基づいています。
+
+- **内容は人が決める** — 台本の自動リライト・短縮・話速調整はしない。
+  ナレーションが動画より長くても警告するだけで、自動では縮めない
+- **データは外に出さない** — 私的な素材を扱う前提のため、処理はローカルで完結する
+- **ツールは勝手なことをしない** — VOICEVOX の自動起動・自動インストールはせず、
+  未起動なら起動方法を案内して停止する
 
 ```powershell
 uv run minoru-studio narrate .\sample.mp4 `
@@ -184,10 +190,6 @@ uv run minoru-studio narrate resume .\jobs\demo-narrate.media-job
    `字幕読み込みを確認` を押します。
 5. アダプターは字幕の自動生成(`CreateSubtitlesFromAudio` 等)を行わず、
    `preview.mp4` を配置素材として使いません。
-
-実機受入の手順と記録は
-[Resolve transcribe/narrate 受入記録](docs/resolve-transcribe-narrate-acceptance.md)
-を参照してください。
 
 ## 基盤コマンド
 
