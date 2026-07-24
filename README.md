@@ -15,6 +15,18 @@ Windows向けローカル動画制作ツールです。MinoruDouga(音ハメ単�
 新しいタイムラインとして安全に適用できます(既存タイムラインは上書きしません)。
 無償版 Resolve でも動作します。
 
+## デモ
+
+編集済みの動画と台本を渡すと、VOICEVOXナレーションと字幕を合成した
+`preview.mp4` が生成されます(`narrate -Preview`)。
+
+![narrateデモ: 台本の1文目が字幕として合成される](img/demo-subtitle-fish.gif)
+
+![narrateデモ: シーンに合わせた字幕が表示される](img/demo-subtitle-anemone.gif)
+
+ナレーション音声付きの完全版(25秒):
+[img/demo-narrate.mp4](img/demo-narrate.mp4)
+
 ## 開発環境
 
 ```powershell
