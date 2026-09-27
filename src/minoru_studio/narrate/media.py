@@ -10,7 +10,7 @@ from typing import Callable
 from uuid import uuid4
 import wave
 
-from minoru_studio.narrate.models import VideoInfo, WavInfo
+from minoru_studio.narrate.models import ImageInfo, VideoInfo, WavInfo
 from minoru_studio.processes import ProcessResult, run_cancellable_process, run_process
 from minoru_studio.transcribe.media import (
     PREVIEW_DURATION_TOLERANCE_MS, FontChoice, _escape_filter_path,
@@ -38,6 +38,22 @@ def probe_video(path: Path, *, runner: Runner = run_process) -> VideoInfo:
         return VideoInfo(_milliseconds(duration), width, height)
     except (IndexError, KeyError, TypeError, ValueError, InvalidOperation, json.JSONDecodeError):
         raise ValueError("input has no valid video stream") from None
+
+
+def probe_image(path: Path, *, runner: Runner = run_process) -> ImageInfo:
+    """Probe a local still without asking FFmpeg to render or follow a URL."""
+    result = _run(runner, [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_type,width,height", "-of", "json", str(Path(path)),
+    ])
+    _require_success(result, "FFprobe image")
+    try:
+        stream = json.loads(result.stdout)["streams"][0]
+        if stream["codec_type"] != "video":
+            raise ValueError
+        return ImageInfo(stream["width"], stream["height"])
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError("input has no valid image stream") from None
 
 
 def inspect_wav(path: Path, *, runner: Runner = run_process) -> WavInfo:

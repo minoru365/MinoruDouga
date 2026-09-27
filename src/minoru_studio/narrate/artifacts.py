@@ -67,13 +67,14 @@ def read_duration_warning(job_dir: Path) -> DurationWarning | None:
         raise ValueError("invalid duration warning") from None
 
 
-def artifacts_valid(job_dir: Path, *, include_preview: bool) -> bool:
+def artifacts_valid(job_dir: Path, *, include_preview: bool, expected_utterances: int | None = None) -> bool:
     try:
         root = Path(job_dir).resolve(strict=True); outputs = (root / "outputs").resolve(strict=True)
         utterances = (outputs / "utterances").resolve(strict=True)
         if not utterances.is_relative_to(root): return False
         wavs = sorted(utterances.glob("utterance-*.wav"))
         if not wavs or [path.name for path in wavs] != [f"utterance-{index:04d}.wav" for index in range(1, len(wavs) + 1)]: return False
+        if expected_utterances is not None and (type(expected_utterances) is not int or expected_utterances <= 0 or len(wavs) != expected_utterances): return False
         names = ["narration.wav", "subtitles.srt", "subtitles.vtt"] + (["preview.mp4"] if include_preview else [])
         expected = [*wavs, *(outputs / name for name in names)]
         expected_kinds = {

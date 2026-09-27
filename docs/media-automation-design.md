@@ -202,6 +202,12 @@ minoru-studio narrate input.mp4 -Script script.txt
 
 音声が元動画より長くても、自動で速度変更、切り捨て、台本短縮をしない。成果物を保持して警告する。
 
+2026-09-27の入力拡張では、単一静止画と、素材・台詞を明示した構成JSONによる
+静止画／動画の混在を扱う。音声生成・字幕・ジョブ再開は既存の `narrate` を共有する。
+画像と章の番号による対応推測は行わない。詳細と変更範囲は
+[`narrate visual sequence spec`](superpowers/specs/2026-09-27-narrate-visual-sequence-design.md)
+を正本とし、従来の動画入力の振る舞いは維持する。
+
 ### 7.4 `script-draft`
 
 ```powershell
@@ -217,6 +223,10 @@ minoru-studio script-draft input.mp4
 ## 8. ジョブパッケージ
 
 既定のジョブディレクトリ名は `<job-name>.media-job` とする。保存先はGUIまたは `-OutputDir` で指定できる。
+
+GUIの初期保存先と `narrate` の省略時保存先は、ユーザーの `Videos/MinoruStudio`
+配下とする。公開リポジトリへ制作物を保存しない。明示された保存先がリポジトリ内の
+場合も、ジョブ全体を除外する `.gitignore` を個人データの保存前に配置する。
 
 ```text
 <job-name>.media-job/

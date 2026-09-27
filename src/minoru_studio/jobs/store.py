@@ -107,6 +107,11 @@ class JobStore:
                 continue
             break
         try:
+            # A job contains private snapshots, paths, logs and intermediate
+            # images as well as media. Exclude the whole package before writing
+            # any of that content, even in an explicitly selected Git checkout.
+            with (candidate / ".gitignore").open("x", encoding="utf-8", newline="\n") as ignore:
+                ignore.write("*\n")
             for child in ("inputs", "outputs", "work", "logs", "resolve"):
                 (candidate / child).mkdir()
             manifest = new_manifest(base, mode)

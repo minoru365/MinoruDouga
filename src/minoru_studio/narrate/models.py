@@ -27,6 +27,28 @@ class NarrateRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class StoryboardRequest:
+    """A descriptor-owned narration request.
+
+    The descriptor deliberately owns both the narration and visual references so
+    callers cannot accidentally pair an unrelated script with a visual sequence.
+    """
+
+    input_path: Path
+    name: str
+    output_dir: Path
+    preview: bool = False
+
+    def __post_init__(self) -> None:
+        for field_name, value in (("input_path", self.input_path), ("output_dir", self.output_dir)):
+            if not isinstance(value, Path):
+                raise ValueError(f"{field_name} must be a Path")
+        _require_nonblank_text("name", self.name)
+        if type(self.preview) is not bool:
+            raise ValueError("preview must be a bool")
+
+
+@dataclass(frozen=True, slots=True)
 class VideoInfo:
     duration_ms: int
     width: int
@@ -39,6 +61,16 @@ class VideoInfo:
             ("height", self.height),
         ):
             _require_positive_integer(field_name, value)
+
+
+@dataclass(frozen=True, slots=True)
+class ImageInfo:
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        _require_positive_integer("width", self.width)
+        _require_positive_integer("height", self.height)
 
 
 @dataclass(frozen=True, slots=True)

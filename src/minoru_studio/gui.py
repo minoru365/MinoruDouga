@@ -16,9 +16,10 @@ from minoru_studio.beat_sync.settings import (
 )
 from minoru_studio.jobs.model import JobManifest, JobMode
 from minoru_studio.jobs.store import JobStore
+from minoru_studio.output_paths import default_output_dir
 from minoru_studio.narrate.artifacts import read_duration_warning
 from minoru_studio.narrate.gui_state import NarrateFormValues
-from minoru_studio.narrate.service import NarrateFailed, NarrateInterrupted, NarrateService
+from minoru_studio.narrate.service import NarrateFailed, NarrateInterrupted, NarrateService, StoryboardMusicRequiresPreview
 from minoru_studio.narrate.settings import (
     load_settings as load_narrate_settings,
 )
@@ -274,7 +275,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     output_var = tk.StringVar(
         value=saved.get(
             "output_dir",
-            str(Path.home() / "Videos" / "MinoruStudio"),
+            str(default_output_dir()),
         )
     )
     music_var = tk.StringVar(value=saved.get("music", ""))
@@ -300,19 +301,19 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     mode_defaults = {
         JobMode.BEAT_SYNC.value: {
             "name": saved.get("name", "video-job"),
-            "output_dir": saved.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+            "output_dir": saved.get("output_dir", str(default_output_dir())),
         },
         JobMode.TRANSCRIBE.value: {
             "name": saved_transcribe.get("name", "transcribe-job"),
-            "output_dir": saved_transcribe.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+            "output_dir": saved_transcribe.get("output_dir", str(default_output_dir())),
         },
         JobMode.SCRIPT_DRAFT.value: {
             "name": saved_script_draft.get("name", "script-draft-job"),
-            "output_dir": saved_script_draft.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+            "output_dir": saved_script_draft.get("output_dir", str(default_output_dir())),
         },
         JobMode.NARRATE.value: {
             "name": saved_narrate.get("name", "narrate-job"),
-            "output_dir": saved_narrate.get("output_dir", str(Path.home() / "Videos" / "MinoruStudio")),
+            "output_dir": saved_narrate.get("output_dir", str(default_output_dir())),
         },
     }
 
@@ -528,21 +529,23 @@ def launch_gui(controller: LauncherController | None = None) -> None:
     narrate_frame = ttk.LabelFrame(frame, text="ナレーション", padding=12)
     narrate_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(14, 4))
     narrate_frame.columnconfigure(1, weight=1)
-    ttk.Label(narrate_frame, text="入力動画").grid(row=0, column=0, sticky="w")
+    ttk.Label(narrate_frame, text="動画・画像・構成JSON").grid(row=0, column=0, sticky="w")
     narrate_input_entry = ttk.Entry(narrate_frame, textvariable=narrate_input_var, width=48)
     narrate_input_entry.grid(row=0, column=1, sticky="ew", pady=4)
 
     def choose_narrate_input() -> None:
         selected = filedialog.askopenfilename(
-            title="ナレーションする動画を選択",
-            filetypes=(("Video", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"), ("All files", "*.*")),
+            title="ナレーションする動画・静止画、または構成JSONを選択",
+            filetypes=(("Media / Storyboard", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff *.json"), ("All files", "*.*")),
         )
         if selected:
             narrate_input_var.set(selected)
+            if Path(selected).suffix.casefold() == ".json":
+                narrate_script_var.set("")
 
     narrate_input_button = ttk.Button(narrate_frame, text="選択", command=choose_narrate_input)
     narrate_input_button.grid(row=0, column=2, padx=4)
-    ttk.Label(narrate_frame, text="台本").grid(row=1, column=0, sticky="w")
+    ttk.Label(narrate_frame, text="台本（構成JSONでは不要）").grid(row=1, column=0, sticky="w")
     narrate_script_entry = ttk.Entry(narrate_frame, textvariable=narrate_script_var, width=48)
     narrate_script_entry.grid(row=1, column=1, sticky="ew", pady=4)
 
@@ -1125,7 +1128,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
                 save_narrate_settings(
                     {
                         "input": str(request.input_path),
-                        "script": str(request.script_path),
+                        "script": str(getattr(request, "script_path", "")),
                         "name": request.name,
                         "output_dir": str(request.output_dir),
                         "preview": request.preview,
@@ -1152,7 +1155,7 @@ def launch_gui(controller: LauncherController | None = None) -> None:
                     assert request is not None
                     job_dir, warning = controller.prepare_narration(
                         input_path=str(request.input_path),
-                        script_path=str(request.script_path),
+                        script_path=str(getattr(request, "script_path", "")),
                         name=request.name,
                         output_dir=str(request.output_dir),
                         preview=request.preview,
@@ -1167,6 +1170,8 @@ def launch_gui(controller: LauncherController | None = None) -> None:
                 root.after(0, lambda: finish_narration_error("", interrupted=True))
             except NarrateFailed as exc:
                 root.after(0, lambda category=exc.category: finish_narration_error(category))
+            except StoryboardMusicRequiresPreview:
+                root.after(0, lambda: finish_narration_error("BGMを指定した構成JSONは「字幕付きプレビューを作成」が必要です"))
             except Exception:
                 root.after(0, lambda: finish_narration_error("execution failure"))
             else:

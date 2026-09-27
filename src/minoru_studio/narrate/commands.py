@@ -5,8 +5,9 @@ from pathlib import Path
 import sys
 
 from minoru_studio.narrate.artifacts import read_duration_warning
-from minoru_studio.narrate.models import NarrateRequest
-from minoru_studio.narrate.service import NarrateFailed, NarrateInterrupted, NarrateService
+from minoru_studio.narrate.models import NarrateRequest, StoryboardRequest
+from minoru_studio.narrate.service import NarrateFailed, NarrateInterrupted, NarrateService, StoryboardMusicRequiresPreview
+from minoru_studio.output_paths import default_output_dir
 
 
 class _NarrateCreateOptionAction(argparse.Action):
@@ -43,30 +44,49 @@ def _validate_resume_arguments(args: argparse.Namespace) -> None:
 def _validate_create_arguments(args: argparse.Namespace) -> None:
     if args.resume_job is not None:
         args.command_parser.error("narrate create accepts exactly one input path")
-    required = {"Script": args.script, "Name": args.name, "OutputDir": args.output_dir}
+    storyboard = Path(args.input_or_action).suffix.casefold() == ".json"
+    if storyboard and args.script is not None:
+        args.command_parser.error("storyboard JSON contains narration; do not specify -Script")
+    required = {"Name": args.name}
+    if not storyboard:
+        required["Script"] = args.script
+    if args.output_dir is not None:
+        required["OutputDir"] = args.output_dir
     missing = [name for name, value in required.items() if not isinstance(value, str) or not value.strip()]
     if missing:
         args.command_parser.error("missing narrate options: " + ", ".join(missing))
-    args.script = args.script.strip()
+    if args.script is not None:
+        args.script = args.script.strip()
     args.name = args.name.strip()
-    args.output_dir = args.output_dir.strip()
+    args.output_dir = args.output_dir.strip() if args.output_dir is not None else str(default_output_dir())
 
 
 def _create(args: argparse.Namespace) -> int:
     try:
-        job_dir = NarrateService().create_and_run(
-            NarrateRequest(
+        if Path(args.input_or_action).suffix.casefold() == ".json":
+            request = StoryboardRequest(
+                input_path=Path(args.input_or_action), name=args.name,
+                output_dir=Path(args.output_dir).resolve(), preview=args.preview,
+            )
+        else:
+            request = NarrateRequest(
                 input_path=Path(args.input_or_action),
                 script_path=Path(args.script),
                 name=args.name,
                 output_dir=Path(args.output_dir).resolve(),
                 preview=args.preview,
             )
-        )
+        job_dir = NarrateService().create_and_run(request)
     except NarrateInterrupted as exc:
         return _interrupted(exc)
     except NarrateFailed as exc:
         return _failed(exc)
+    except StoryboardMusicRequiresPreview as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    except (ValueError, OSError):
+        print("input validation", file=sys.stderr)
+        return 1
     return _succeeded(job_dir)
 
 

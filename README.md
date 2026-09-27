@@ -9,7 +9,7 @@ Windows向けローカル動画制作ツールです。MinoruDouga(音ハメ単�
 - **文字起こし(transcribe)** — ローカルの FFmpeg + faster-whisper で字幕
   (`srt` / `vtt`)と字幕付きプレビューを生成。外部サービスへの送信なし
 - **読み上げ(narrate)** — 人が承認した台本から、ローカル VOICEVOX で
-  ナレーション音声と字幕を生成
+  ナレーション音声と字幕を生成。静止画、動画、両者を混在させた構成にも対応
 
 成果物は2通りに使えます。字幕・ナレーションを合成済みの `preview.mp4` を
 **そのまま出力して完結**させるか、動画編集ソフト
@@ -68,6 +68,8 @@ uv run pytest -q
 ## 音ハメjobを準備する
 
 ```powershell
+$outputRoot = Join-Path $env:USERPROFILE 'Videos\MinoruStudio'
+
 uv run minoru-studio beat-sync `
   -Music .\song.mp3 `
   -MediaDir .\media `
@@ -75,7 +77,7 @@ uv run minoru-studio beat-sync `
   -Order asc `
   -TimelineName "Beat Sync Demo" `
   -Name demo `
-  -OutputDir .\jobs
+  -OutputDir $outputRoot
 ```
 
 `-EveryN` は `auto` または1〜16、`-Order` は `asc` または `random` を
@@ -90,7 +92,7 @@ Resolve内アダプターの境界で小数秒の解釈差が生じません。
 場合は安全のため停止します。
 
 ```powershell
-uv run minoru-studio beat-sync resume .\jobs\demo.media-job
+uv run minoru-studio beat-sync resume (Join-Path $outputRoot 'demo.media-job')
 ```
 
 ## GUI
@@ -112,19 +114,21 @@ faster-whisper を使い、入力メディア・ジョブ・生成物を外部�
 download は開始しません。
 
 ```powershell
+$outputRoot = Join-Path $env:USERPROFILE 'Videos\MinoruStudio'
+
 uv run minoru-studio transcribe .\sample.mp4 `
   -Name demo-transcribe `
-  -OutputDir .\jobs `
+  -OutputDir $outputRoot `
   -Preview
 
 # 未キャッシュ model を使う場合だけ、利用者が明示して追加する
 uv run minoru-studio transcribe .\sample.mp4 `
   -Name demo-transcribe `
-  -OutputDir .\jobs `
+  -OutputDir $outputRoot `
   -Preview `
   -AllowModelDownload
 
-uv run minoru-studio transcribe resume .\jobs\demo-transcribe.media-job
+uv run minoru-studio transcribe resume (Join-Path $outputRoot 'demo-transcribe.media-job')
 ```
 
 引数なし GUI (`uv run minoru-studio`) ではモードを `transcribe` にして、入力動画・
@@ -164,15 +168,98 @@ VOICEVOX は利用者が事前に起動しておくローカル HTTP API(`127.0.
 uv run minoru-studio narrate .\sample.mp4 `
   -Script .\approved-script.txt `
   -Name demo-narrate `
-  -OutputDir .\jobs `
   -Preview
 
-uv run minoru-studio narrate resume .\jobs\demo-narrate.media-job
+uv run minoru-studio narrate resume (Join-Path $env:USERPROFILE 'Videos\MinoruStudio\demo-narrate.media-job')
 ```
 
 成功すると `.media-job/outputs/` に `narration.wav`、`subtitles.srt`、
 `subtitles.vtt`、および video 入力で `-Preview` を指定した場合の `preview.mp4` が
 作られます。
+
+### 静止画と、静止画・動画の組み合わせ
+
+1枚の静止画は動画と同じ指定方法です。ナレーションが終わるまで表示します。
+
+```powershell
+uv run minoru-studio narrate .\picture.png -Script .\approved-script.txt -Name picture -Preview
+```
+
+複数素材は、素材ごとに台詞を明記した構成JSONを渡します。ファイル名と台本の
+章番号から対応を推測する処理はありません。`clips` の記載順に再生するので、
+ファイル名の昇順で使いたい場合は、その順に記載してください。
+
+```json
+{
+  "version": 1,
+  "clips": [
+    {"id": "doorbell", "kind": "image", "source": "33.png", "narration": "チャイムが鳴りました。"},
+    {"id": "delivery", "kind": "image", "source": "34.png", "narration": "荷物が届きました。二人は喜んでいます。"},
+    {"id": "opening", "kind": "video", "source": "opening.mp4", "narration": "箱を開けてみましょう。", "trim_start_ms": 1000, "trim_end_ms": 4000}
+  ]
+}
+```
+
+```powershell
+uv run minoru-studio narrate .\storyboard.json -Name story -Preview
+```
+
+- 構成JSONでは台詞が内蔵されているので `-Script` は指定しません。GUIでも入力に
+  JSONを選び、台本欄を空にして実行できます。
+- `source` の相対パスは構成JSONがあるフォルダ基準です。画像は PNG/JPEG/BMP/
+  WebP/TIFF、動画は MP4/MOV/MKV/AVI/WebM/M4V を指定できます。
+- 各 `id` は一意にします。同じ画像を複数の項目で再利用したり、1枚に複数の文を
+  割り当てたりできます。章の途中で絵を変える場合は、台詞を項目に分けます。
+- 切替時刻は実際に生成した音声と発話間の300msから計算します。完成プレビューで
+  絵と台詞の内容も確認してください。総尺や枚数の一致だけでは対応を保証できません。
+- 新しい画像／混在プレビューは1280×720・30fpsです。縦横比を保持して余白を付けます。
+  動画は指定区間を先頭から使い、音声より短ければ最終フレームを保持し、長ければ
+  ナレーション区間の長さでカットします。元動画の音声は使用しません。
+- この新しい入力形式のResolveへの直接適用は対象外です。MP4・WAV・字幕を単独で
+  利用できます。従来の動画入力のResolve適用は変わりません。
+
+#### 構成JSONのBGM
+
+構成JSONに `music` を書くと、`preview.mp4` にBGMを重ねます。場面ごとの曲は
+クリップの `music` で明示し、省略したクリップは `default` の曲になります。
+
+```json
+{
+  "version": 1,
+  "music": {
+    "tracks": [
+      {"id": "normal", "source": "normal.mp3", "gain_db": -24},
+      {"id": "battle", "source": "battle.mp3", "gain_db": -29}
+    ],
+    "default": "normal",
+    "crossfade_ms": 1500
+  },
+  "clips": [
+    {"id": "calm", "kind": "image", "source": "01.png", "narration": "穏やかな場面です。"},
+    {"id": "fight", "kind": "image", "source": "02.png", "narration": "戦いが始まりました。", "music": "battle"}
+  ]
+}
+```
+
+- BGMは `-Preview` 指定時だけ使えます。`narration.wav` と字幕はナレーションのみの
+  ままなので、別の編集ソフトでも使えます。
+- 曲はWAV/FLAC/MP3/OGG/M4A/AACで、最大8曲です。`gain_db` は -40〜0(省略時 -18)。
+  曲ごとに元の音量が違うので、ナレーションを聞きながら調整してください。
+- 同じ曲が続くクリップは1区間になり、区間の最初から再生します。区間より曲が短ければ
+  ループし、別の曲から戻った場合も最初から再生します。
+- 曲の切り替えは境界を中心に `crossfade_ms`(0〜5000、省略時1500)で重ね、最後は
+  2秒でフェードアウトします。ナレーションの長さやタイミングは変わりません。
+
+### 成果物と公開リポジトリ
+
+`narrate` の `-OutputDir` 省略時とGUIの初期保存先は、ユーザーの
+`Videos\MinoruStudio` です。成果物・台本・構成JSON・確認画像はリポジトリ外へ
+保存してください。`-OutputDir` で別の保存先も明示できます。
+
+新しく作る `.media-job` は、個人パスを含むJSON、台本、ログ、中間画像も含めて
+ジョブ全体をGit除外する `.gitignore` を持ちます。このリポジトリ側でもジョブ・
+出力フォルダを除外します。除外は既に追跡済みのファイルには効かないため、公開前に
+`git status` と差分を確認してください。既存の成果物を自動で移動・削除はしません。
 
 ## Resolveで文字起こし・読み上げを適用する
 
@@ -197,8 +284,9 @@ uv run minoru-studio narrate resume .\jobs\demo-narrate.media-job
 ```powershell
 uv run minoru-studio --version
 uv run minoru-studio doctor --json
-uv run minoru-studio jobs create -Mode beat-sync -Name demo -OutputDir .\jobs
-uv run minoru-studio jobs inspect .\jobs\demo.media-job
+$outputRoot = Join-Path $env:USERPROFILE 'Videos\MinoruStudio'
+uv run minoru-studio jobs create -Mode beat-sync -Name demo -OutputDir $outputRoot
+uv run minoru-studio jobs inspect (Join-Path $outputRoot 'demo.media-job')
 uv run minoru-studio
 ```
 

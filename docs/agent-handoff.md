@@ -27,6 +27,8 @@
 | `transcribe` のローカル文字起こし、TXT/SRT/VTT、任意preview | 完了 | 文字起こし受入記録 |
 | `script-draft` | 完了。実動画受入済み(2026-07-24) | 総合設計 7.4、[`resolve-transcribe-narrate-acceptance.md`](resolve-transcribe-narrate-acceptance.md) |
 | `narrate` | 完了。VOICEVOX実音声・実preview受入済み(2026-07-24) | 総合設計 7.3、11.2、[`resolve-transcribe-narrate-acceptance.md`](resolve-transcribe-narrate-acceptance.md) |
+| `narrate` 静止画・混在入力 | 単一画像＋台本、または明示的な構成JSONで本体の音声生成を再利用。合成素材による自動検証が対象。実ユーザー素材・新形式のResolve適用は受入対象外 | [`静止画・混在入力仕様`](superpowers/specs/2026-09-27-narrate-visual-sequence-design.md)、[`実装計画`](superpowers/plans/2026-09-27-narrate-visual-sequence.md) |
+| `narrate` 構成JSONのBGM | 実装済み・人の試聴確認待ち。構成JSONで曲とクリップの対応を明示し、`preview.mp4` だけにクロスフェード付きで合成。`narration.wav`・字幕はナレーションのみ | [`BGM仕様`](superpowers/specs/2026-09-28-narrate-storyboard-music-design.md)、[`実装計画`](superpowers/plans/2026-09-28-narrate-storyboard-music.md) |
 | `transcribe` / `narrate` のResolve適用 | 完了。実機まとめて受入済み(2026-07-24)。Resolveなしの `preview.mp4` は独立した完成経路として維持し、Resolveは微修正したい時だけ使う任意編集経路 | [`superpowers/specs/2026-07-23-resolve-final-design.md`](superpowers/specs/2026-07-23-resolve-final-design.md)、[`superpowers/plans/2026-07-23-resolve-final-integration.md`](superpowers/plans/2026-07-23-resolve-final-integration.md)、[`resolve-transcribe-narrate-acceptance.md`](resolve-transcribe-narrate-acceptance.md) |
 
 ## 実装順序と担当境界
@@ -50,6 +52,7 @@
 - `beat-sync`、`transcribe`、Resolveアダプターの既存挙動を変更しない。
 - 動画入力の `transcribe`／`narrate` は `-Preview` による焼き込み字幕付き MP4 だけで完結できる。Resolve は元動画・WAV・SRTを使って微修正する任意の編集経路であり、preview.mp4 を適用素材にしない。
 - 現行製品には外部送信経路がない。VOICEVOXはローカルHTTP APIだけを利用する。
+- 公開リポジトリに制作物を保存しない。標準出力はユーザーのVideos/MinoruStudioとし、明示的にリポジトリ内を指定する場合もジョブ全体をGit除外する。詳細はルートの `AGENTS.md` を参照。
 - OpenAI API、クラウド音声認識、クラウドTTS、Web自動操作、最終レンダー自動化は追加しない。
 - リモートへのfetch、push、PR作成は明示依頼がある場合だけ行う。
 

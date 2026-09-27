@@ -189,7 +189,8 @@ def build_parser() -> argparse.ArgumentParser:
         "narrate",
         help="create or resume a local narration job",
         description=(
-            "create: INPUT_PATH -Script SCRIPT_PATH -Name NAME -OutputDir OUTPUT_DIR [-Preview]\n"
+            "create: VIDEO_OR_IMAGE -Script SCRIPT_PATH -Name NAME [-OutputDir OUTPUT_DIR] [-Preview]\n"
+            "storyboard: STORYBOARD.json -Name NAME [-OutputDir OUTPUT_DIR] [-Preview]\n"
             "resume: resume JOB_DIR"
         ),
     )
@@ -202,7 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
     narrate_parser.add_argument("resume_job", nargs="?", metavar="JOB_DIR")
     narrate_parser.add_argument("-Script", "--script", dest="script", action=_NarrateCreateOptionAction)
     narrate_parser.add_argument("-Name", "--name", dest="name", action=_NarrateCreateOptionAction)
-    narrate_parser.add_argument("-OutputDir", "--output-dir", dest="output_dir", action=_NarrateCreateOptionAction)
+    narrate_parser.add_argument(
+        "-OutputDir", "--output-dir", dest="output_dir", action=_NarrateCreateOptionAction,
+        help="output root (default: user's Videos/MinoruStudio, outside the checkout)",
+    )
     narrate_parser.add_argument(
         "-Preview", "--preview", action=_NarrateCreateOptionAction,
         nargs=0, const=True, default=False,

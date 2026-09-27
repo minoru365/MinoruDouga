@@ -18,12 +18,14 @@ from minoru_studio.jobs.model import ArtifactRecord, InputRef, JobManifest, JobM
 from minoru_studio.jobs.store import JobStore, fingerprint_artifact, fingerprint_file
 from minoru_studio.logging_utils import configure_job_logger
 from minoru_studio.processes import ProcessCancelledError
-from minoru_studio.transcribe.media import FontChoice, is_supported_japanese_font, read_media_tool_versions, resolve_japanese_font
+from minoru_studio.transcribe.media import FontChoice, MediaInfo, is_supported_japanese_font, probe_media, read_media_tool_versions, resolve_japanese_font
 
 from .artifacts import artifacts_valid, build_timeline, write_subtitles
-from .media import concat_wavs, inspect_wav, probe_video, publish_wav, render_preview
-from .models import NarrateRequest, Utterance, VideoInfo, VoicevoxProvenance, WavInfo
+from .media import concat_wavs, inspect_wav, probe_image, probe_video, publish_wav, render_preview
+from .models import ImageInfo, NarrateRequest, StoryboardRequest, Utterance, VideoInfo, VoicevoxProvenance, WavInfo
 from .script import parse_script, snapshot_script, snapshot_valid
+from .storyboard import ClipUtterances, Storyboard, parse_storyboard, storyboard_utterances
+from .visual_media import plan_music_runs, render_visual_preview
 from .voicevox import VoicevoxClient, VoicevoxSynthesisError, VoicevoxUnavailable
 
 
@@ -38,6 +40,12 @@ class NarrateFailed(RuntimeError):
     def __init__(self, job_dir: Path, category: str) -> None:
         self.job_dir, self.category = Path(job_dir), category
         super().__init__(f"{category}: {self.job_dir}")
+
+
+class StoryboardMusicRequiresPreview(ValueError):
+    """Storyboard music is mixed only into preview.mp4, so it needs -Preview."""
+    def __init__(self) -> None:
+        super().__init__("storyboard music requires -Preview")
 
 
 class NarrateInterrupted(RuntimeError):
@@ -61,6 +69,8 @@ class NarrateService:
     def __init__(
         self, *, store: JobStore | None = None,
         probe: Callable[[Path], VideoInfo] = probe_video,
+        image_probe: Callable[[Path], ImageInfo] = probe_image,
+        music_probe: Callable[[Path], MediaInfo] = probe_media,
         parse: Callable[[Path], tuple[Utterance, ...]] = parse_script,
         voicevox: VoicevoxClient | object | None = None,
         publish_wav: Callable[[bytes, Path], WavInfo] = publish_wav,
@@ -68,21 +78,23 @@ class NarrateService:
         concat: Callable[..., WavInfo] = concat_wavs,
         subtitles: Callable[[Path, Sequence[Any]], tuple[Path, Path]] = write_subtitles,
         preview_renderer: Callable[..., Path] = render_preview,
+        visual_preview_renderer: Callable[..., Path] = render_visual_preview,
         artifacts_validator: Callable[..., bool] = artifacts_valid,
         font_resolver: Callable[[], FontChoice] = resolve_japanese_font,
         tool_versions: Callable[[], object] = read_media_tool_versions,
         logger_factory: Callable[[Path], logging.Logger] = configure_job_logger,
     ) -> None:
-        self._store = store or JobStore(); self._probe = probe; self._parse = parse
+        self._store = store or JobStore(); self._probe = probe; self._image_probe = image_probe; self._music_probe = music_probe; self._parse = parse
         self._voicevox = voicevox or VoicevoxClient(); self._publish_wav = publish_wav
         self._inspect_wav = inspect_wav; self._concat = concat; self._subtitles = subtitles
-        self._preview_renderer = preview_renderer; self._artifacts_validator = artifacts_validator
+        self._preview_renderer = preview_renderer; self._visual_preview_renderer = visual_preview_renderer; self._artifacts_validator = artifacts_validator
         self._font_resolver = font_resolver; self._tool_versions = tool_versions; self._logger_factory = logger_factory
 
-    def create_and_run(self, request: NarrateRequest, *, cancel_event: object | None = None, progress: Callable[[str], object] | None = None) -> Path:
+    def create_and_run(self, request: NarrateRequest | StoryboardRequest, *, cancel_event: object | None = None, progress: Callable[[str], object] | None = None) -> Path:
         self._validate_request(request)
         settings = self._settings(request)
-        job_dir = self._store.create(request.output_dir, request.name, JobMode.NARRATE, (request.input_path, request.script_path), settings)
+        inputs = (request.input_path, request.script_path) if isinstance(request, NarrateRequest) else (request.input_path, *parse_storyboard(request.input_path).input_paths)
+        job_dir = self._store.create(request.output_dir, request.name, JobMode.NARRATE, inputs, settings)
         try:
             self._claim(job_dir, settings, {JobStatus.PENDING})
         except _InputInvalid:
@@ -104,7 +116,7 @@ class NarrateService:
             raise RuntimeError("narration job is already running") from None
         return self._execute(job_dir, request, cancel_event, progress)
 
-    def _execute(self, job_dir: Path, request: NarrateRequest, cancel_event: object | None, progress: Callable[[str], object] | None) -> Path:
+    def _execute(self, job_dir: Path, request: NarrateRequest | StoryboardRequest, cancel_event: object | None, progress: Callable[[str], object] | None) -> Path:
         logger: logging.Logger | _NoopLogger = _NoopLogger(); current: str | None = None; category = "input validation"
         try:
             try: logger = self._logger_factory(job_dir)
@@ -114,7 +126,10 @@ class NarrateService:
             for current in steps[start:]:
                 category = self._category(current)
                 self._run_step(job_dir, current, lambda name=current: self._operation(name, job_dir, request, context, cancel_event), cancel_event, progress, logger)
-            if not self._artifacts_validator(job_dir, include_preview=request.preview): raise _OutputInvalid()
+            self._validate_inputs(self._store.load(job_dir, recover_interrupted=False))
+            expected_utterances = len(self._require_utterances(context))
+            valid = self._artifacts_validator(job_dir, include_preview=request.preview, **({"expected_utterances": expected_utterances} if self._is_visual_request(request) else {}))
+            if not valid: raise _OutputInvalid()
             self._store.update(job_dir, lambda manifest: (setattr(manifest, "status", JobStatus.SUCCEEDED), setattr(manifest, "last_error", None)))
             logger.info("job status=succeeded"); return job_dir
         except (ProcessCancelledError, KeyboardInterrupt, InterruptedError):
@@ -125,7 +140,7 @@ class NarrateService:
             self._mark_failed(job_dir, current, failure, None); logger.error("step=%s category=%s exception=%s", current or "none", failure, type(exc).__name__)
             raise NarrateFailed(job_dir, failure) from None
 
-    def _operation(self, name: str, job: Path, request: NarrateRequest, context: dict[str, Any], cancel_event: object | None) -> None:
+    def _operation(self, name: str, job: Path, request: NarrateRequest | StoryboardRequest, context: dict[str, Any], cancel_event: object | None) -> None:
         if name == "probe-input": self._probe_step(job, request, context)
         elif name == "parse-script": self._parse_step(job, request, context)
         elif name == "synthesize-utterances": self._synthesis_step(job, context, cancel_event)
@@ -133,7 +148,9 @@ class NarrateService:
         elif name == "render-artifacts": self._artifacts_step(job, context)
         else: self._preview_step(job, request, context, cancel_event)
 
-    def _probe_step(self, job: Path, request: NarrateRequest, context: dict[str, Any]) -> None:
+    def _probe_step(self, job: Path, request: NarrateRequest | StoryboardRequest, context: dict[str, Any]) -> None:
+        if self._is_visual_request(request):
+            self._visual_probe_step(job, request, context); return
         video = self._probe(request.input_path)
         if not isinstance(video, VideoInfo): raise _InputInvalid()
         payload: dict[str, Any] = {"duration_ms": video.duration_ms, "width": video.width, "height": video.height}
@@ -148,7 +165,9 @@ class NarrateService:
         self._store.update(job, lambda manifest: manifest.tools.update({"ffmpeg": ffmpeg, "ffprobe": ffprobe, "narrate-video-info-sha256": fingerprint_file(job / "work" / "video-info.json").sha256}))
         if not self._load_video(job, context, request.preview): raise _InputInvalid()
 
-    def _parse_step(self, job: Path, request: NarrateRequest, context: dict[str, Any]) -> None:
+    def _parse_step(self, job: Path, request: NarrateRequest | StoryboardRequest, context: dict[str, Any]) -> None:
+        if isinstance(request, StoryboardRequest):
+            self._storyboard_parse_step(job, request, context); return
         expected = self._script_ref(job)
         snapshot = job / "inputs" / f"script{request.script_path.suffix.casefold()}"
         if not snapshot.exists(): snapshot_script(request.script_path, job / "inputs")
@@ -160,6 +179,7 @@ class NarrateService:
         context["utterances"] = utterances; context["script_sha256"] = expected.sha256
 
     def _synthesis_step(self, job: Path, context: dict[str, Any], cancel_event: object | None) -> None:
+        self._validate_inputs(self._store.load(job, recover_interrupted=False))
         utterances = self._require_utterances(context); script_hash = context["script_sha256"]
         provenance = self._voicevox.preflight(cancel_event=cancel_event)
         if not isinstance(provenance, VoicevoxProvenance) or provenance.speaker_name != _SPEAKER or provenance.style_name != _STYLE: raise VoicevoxUnavailable()
@@ -222,27 +242,192 @@ class NarrateService:
         finally:
             for path in staged_dir.glob("*"): path.unlink(missing_ok=True)
             staged_dir.rmdir()
+        if self._visual_context(context):
+            self._record(job, [fingerprint_artifact(job, final_srt, "subtitles-srt"), fingerprint_artifact(job, final_vtt, "subtitles-vtt")])
+            self._write_visual_plan(job, context, cues)
+            return
         video = self._require_video(context); warning = job / "work" / "duration-warning.json"; self._safe_target(job, warning, "work")
         if self._ms(narration.duration_seconds) > video.duration_ms: self._write_json(job, warning, {"source_duration_ms": video.duration_ms, "narration_duration_ms": self._ms(narration.duration_seconds)})
         else: warning.unlink(missing_ok=True)
         self._record(job, [fingerprint_artifact(job, final_srt, "subtitles-srt"), fingerprint_artifact(job, final_vtt, "subtitles-vtt")])
 
-    def _preview_step(self, job: Path, request: NarrateRequest, context: dict[str, Any], cancel_event: object | None) -> None:
+    def _preview_step(self, job: Path, request: NarrateRequest | StoryboardRequest, context: dict[str, Any], cancel_event: object | None) -> None:
         narration = self._inspect_wav(job / "outputs" / "narration.wav"); target = job / "outputs" / "preview.mp4"; staged = self._temporary_work_path(job, ".preview.mp4")
         try:
-            self._preview_renderer(request.input_path, job / "outputs" / "narration.wav", job / "outputs" / "subtitles.srt", staged, self._require_video(context), self._ms(narration.duration_seconds), font=context.get("font"), cancel_event=cancel_event)
+            self._validate_inputs(self._store.load(job, recover_interrupted=False))
+            if self._visual_context(context):
+                music = self._load_music_runs(job, context)
+                self._visual_preview_renderer(self._load_visual_plan(job, context), job / "outputs" / "narration.wav", job / "outputs" / "subtitles.srt", staged, self._ms(narration.duration_seconds), font=context.get("font"), cancel_event=cancel_event, **({"music": music} if music is not None else {}))
+            else:
+                self._preview_renderer(request.input_path, job / "outputs" / "narration.wav", job / "outputs" / "subtitles.srt", staged, self._require_video(context), self._ms(narration.duration_seconds), font=context.get("font"), cancel_event=cancel_event)
             self._publish_output(job, staged, target, "preview-mp4")
         finally:
             staged.unlink(missing_ok=True)
         self._record(job, [fingerprint_artifact(job, target, "preview-mp4")])
 
-    def _reconcile(self, job: Path, request: NarrateRequest) -> tuple[dict[str, Any], int]:
+    def _visual_probe_step(self, job: Path, request: NarrateRequest | StoryboardRequest, context: dict[str, Any]) -> None:
+        self._validate_inputs(self._store.load(job, recover_interrupted=False))
+        if isinstance(request, StoryboardRequest):
+            storyboard = parse_storyboard(request.input_path)
+            clips = storyboard.clips
+            variant = "storyboard"
+            music = storyboard.music
+        else:
+            if not self._is_image(request.input_path):
+                raise _InputInvalid()
+            from .storyboard import StoryboardClip
+            clips = (StoryboardClip("still", "image", request.input_path.resolve(strict=True), "still"),)
+            variant = "still"
+            music = None
+        source_info: dict[Path, dict[str, Any]] = {}
+        for clip in clips:
+            if clip.source not in source_info:
+                if clip.kind == "image":
+                    info = self._image_probe(clip.source)
+                    if not isinstance(info, ImageInfo):
+                        raise _InputInvalid()
+                    source_info[clip.source] = {"kind": "image", "source": str(clip.source), "width": info.width, "height": info.height}
+                else:
+                    info = self._probe(clip.source)
+                    if not isinstance(info, VideoInfo):
+                        raise _InputInvalid()
+                    source_info[clip.source] = {"kind": "video", "source": str(clip.source), "width": info.width, "height": info.height, "duration_ms": info.duration_ms}
+            if clip.kind == "video":
+                start, end = clip.trim_start_ms or 0, clip.trim_end_ms or source_info[clip.source]["duration_ms"]
+                if start >= end or end > source_info[clip.source]["duration_ms"]:
+                    raise _InputInvalid()
+        payload: dict[str, Any] = {"version": 1, "variant": variant, "sources": list(source_info.values())}
+        if music is not None:
+            music_sources: list[dict[str, Any]] = []
+            for track in music.tracks:
+                if any(item["source"] == str(track.source) for item in music_sources): continue
+                info = self._music_probe(track.source)
+                if not isinstance(info, MediaInfo) or not info.has_audio: raise _InputInvalid()
+                music_sources.append({"source": str(track.source), "duration_ms": info.duration_ms})
+            payload["music_sources"] = music_sources
+        if request.preview:
+            try: font = self._font_resolver()
+            except Exception as exc: raise _InputInvalid() from exc
+            if not is_supported_japanese_font(font): raise _InputInvalid()
+            ref = fingerprint_file(font.file.resolve(strict=True)); payload["preview_font"] = {"family": font.family, "path": ref.path, "sha256": ref.sha256, "size": ref.size, "mtime_ns": ref.mtime_ns}; context["font"] = font
+        self._write_json(job, job / "work" / "visual-input.json", payload)
+        versions = self._tool_versions(); ffmpeg, ffprobe = getattr(versions, "ffmpeg", None), getattr(versions, "ffprobe", None)
+        if not self._nonblank(ffmpeg) or not self._nonblank(ffprobe): raise _InputInvalid()
+        self._store.update(job, lambda manifest: manifest.tools.update({"ffmpeg": ffmpeg, "ffprobe": ffprobe, "narrate-visual-input-sha256": fingerprint_file(job / "work" / "visual-input.json").sha256}))
+        context["visual"] = {"variant": variant, "clips": clips, "sources": source_info, "music": music}
+
+    def _storyboard_parse_step(self, job: Path, request: StoryboardRequest, context: dict[str, Any]) -> None:
+        from .storyboard import snapshot_storyboard
+        descriptor = self._descriptor_ref(job)
+        snapshot = job / "inputs" / "storyboard.json"
+        if not snapshot.exists(): snapshot_storyboard(request.input_path, job / "inputs")
+        if not snapshot_valid(snapshot, descriptor.sha256): raise _InputInvalid()
+        storyboard = parse_storyboard(snapshot, source_base=request.input_path.resolve(strict=True).parent)
+        mapped = storyboard_utterances(storyboard)
+        utterances = tuple(item for group in mapped for item in group.utterances)
+        if not self._valid_utterances(utterances): raise _InputInvalid()
+        self._write_json(job, job / "work" / "utterances.json", {"descriptor_sha256": descriptor.sha256, "utterances": [asdict(item) for item in utterances], "clips": [{"id": group.clip.id, "utterance_indices": [item.index for item in group.utterances]} for group in mapped]})
+        self._store.update(job, lambda manifest: manifest.tools.__setitem__("narrate-utterances-sha256", fingerprint_file(job / "work" / "utterances.json").sha256))
+        context["utterances"], context["script_sha256"], context["clip_utterances"] = utterances, descriptor.sha256, mapped
+
+    def _load_visual_input(self, job: Path, context: dict[str, Any], request: NarrateRequest | StoryboardRequest) -> bool:
+        try:
+            if not self._state_fingerprint_valid(job, job / "work" / "visual-input.json", "narrate-visual-input-sha256"): return False
+            payload = json.loads((job / "work" / "visual-input.json").read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("version") != 1 or payload.get("variant") not in {"still", "storyboard"} or not isinstance(payload.get("sources"), list): return False
+            if request.preview:
+                font = payload.get("preview_font")
+                if not isinstance(font, dict) or set(font) != {"family", "path", "sha256", "size", "mtime_ns"}: return False
+                ref = fingerprint_file(Path(font["path"]));
+                if (ref.sha256, ref.size, ref.mtime_ns) != (font["sha256"], font["size"], font["mtime_ns"]): return False
+                context["font"] = FontChoice(font["family"], Path(font["path"]))
+            music = None
+            if isinstance(request, StoryboardRequest):
+                storyboard = parse_storyboard(request.input_path); clips, music = storyboard.clips, storyboard.music
+            else:
+                from .storyboard import StoryboardClip
+                clips = (StoryboardClip("still", "image", request.input_path.resolve(strict=True), "still"),)
+            probed_music = {item["source"] for item in payload.get("music_sources", [])}
+            if probed_music != ({str(track.source) for track in music.tracks} if music is not None else set()): return False
+            context["visual"] = {"variant": payload["variant"], "clips": clips, "sources": {Path(item["source"]): item for item in payload["sources"]}, "music": music}
+            return True
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError): return False
+
+    def _write_visual_plan(self, job: Path, context: dict[str, Any], cues: Sequence[Any]) -> None:
+        visual = context.get("visual"); mapped = context.get("clip_utterances")
+        if not isinstance(visual, dict): raise _InputInvalid()
+        if mapped is None:
+            from .storyboard import ClipUtterances
+            mapped = (ClipUtterances(visual["clips"][0], tuple(cues)),)
+        cue_by_index = {cue.index: cue for cue in cues}
+        plan: list[dict[str, Any]] = []
+        for number, group in enumerate(mapped):
+            indices = [item.index for item in group.utterances]
+            first, last = cue_by_index[indices[0]], cue_by_index[indices[-1]]
+            end = cue_by_index[mapped[number + 1].utterances[0].index].start_ms if number + 1 < len(mapped) else last.end_ms
+            clip = group.clip; source = visual["sources"].get(clip.source)
+            if not isinstance(source, dict): raise _InputInvalid()
+            item: dict[str, Any] = {"id": clip.id, "kind": clip.kind, "source": str(clip.source), "source_sha256": fingerprint_file(clip.source).sha256, "start_ms": first.start_ms, "end_ms": end, "utterance_start": indices[0], "utterance_end": indices[-1]}
+            if clip.kind == "video": item.update({"trim_start_ms": clip.trim_start_ms or 0, "trim_end_ms": clip.trim_end_ms or source["duration_ms"]})
+            plan.append(item)
+        payload: dict[str, Any] = {"version": 1, "clips": plan}
+        music = visual.get("music")
+        if music is not None:
+            tracks = [group.clip.music or music.default for group in mapped]
+            runs = plan_music_runs([(track, item["start_ms"], item["end_ms"]) for track, item in zip(tracks, plan)], crossfade_ms=music.crossfade_ms)
+            for run in runs:
+                track = music.track(run["track"])
+                run.update({"source": str(track.source), "source_sha256": fingerprint_file(track.source).sha256, "gain_db": track.gain_db})
+            payload["music"] = {"crossfade_ms": music.crossfade_ms, "runs": list(runs)}
+        path = job / "work" / "visual-plan.json"
+        if path.exists():
+            if not self._load_visual_plan(job, context): raise _OutputInvalid()
+            return
+        self._write_json(job, path, payload)
+        self._store.update(job, lambda manifest: manifest.tools.__setitem__("narrate-visual-plan-sha256", fingerprint_file(path).sha256))
+
+    def _load_visual_plan(self, job: Path, context: dict[str, Any]) -> list[dict[str, object]]:
+        try:
+            path = job / "work" / "visual-plan.json"
+            if not self._state_fingerprint_valid(job, path, "narrate-visual-plan-sha256"): raise ValueError
+            payload = json.loads(path.read_text(encoding="utf-8")); clips = payload.get("clips") if isinstance(payload, dict) and payload.get("version") == 1 else None
+            if not isinstance(clips, list) or not clips: raise ValueError
+            for clip in clips:
+                if not isinstance(clip, dict) or set(clip) - {"id", "kind", "source", "source_sha256", "start_ms", "end_ms", "utterance_start", "utterance_end", "trim_start_ms", "trim_end_ms"}: raise ValueError
+                if fingerprint_file(Path(clip["source"])).sha256 != clip["source_sha256"]: raise ValueError
+            return clips
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            raise _InputInvalid() from None
+
+    def _load_music_runs(self, job: Path, context: dict[str, Any]) -> list[dict[str, object]] | None:
+        try:
+            path = job / "work" / "visual-plan.json"
+            if not self._state_fingerprint_valid(job, path, "narrate-visual-plan-sha256"): raise ValueError
+            music = json.loads(path.read_text(encoding="utf-8")).get("music")
+            declared = context["visual"].get("music") is not None
+            if music is None:
+                if declared: raise ValueError
+                return None
+            runs = music["runs"] if declared and isinstance(music, dict) and set(music) == {"crossfade_ms", "runs"} else None
+            if not isinstance(runs, list) or not runs: raise ValueError
+            for run in runs:
+                if not isinstance(run, dict) or set(run) != {"track", "source", "source_sha256", "gain_db", "start_ms", "end_ms", "fade_in_ms", "fade_out_ms"}: raise ValueError
+                if fingerprint_file(Path(run["source"])).sha256 != run["source_sha256"]: raise ValueError
+            return runs
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+            raise _InputInvalid() from None
+
+    def _reconcile(self, job: Path, request: NarrateRequest | StoryboardRequest) -> tuple[dict[str, Any], int]:
         self._safe_roots(job); context: dict[str, Any] = {}; steps = self._steps(request.preview); manifest = self._store.load(job, recover_interrupted=False)
-        validators = {"probe-input": lambda: self._load_video(job, context, request.preview), "parse-script": lambda: self._load_utterances(job, context), "synthesize-utterances": lambda: self._load_synthesis(job, context), "concat-audio": lambda: self._valid_wav(job / "outputs" / "narration.wav") and self._artifact_valid(job, job / "outputs" / "narration.wav", "narration-wav"), "render-artifacts": lambda: self._render_artifacts_valid(job), "render-preview": lambda: self._preview_artifact_valid(job)}
+        validators = {"probe-input": lambda: self._load_visual_input(job, context, request) if self._is_visual_request(request) else self._load_video(job, context, request.preview), "parse-script": lambda: self._load_utterances(job, context), "synthesize-utterances": lambda: self._load_synthesis(job, context), "concat-audio": lambda: self._valid_wav(job / "outputs" / "narration.wav") and self._artifact_valid(job, job / "outputs" / "narration.wav", "narration-wav"), "render-artifacts": lambda: self._render_artifacts_valid(job, context), "render-preview": lambda: self._preview_artifact_valid(job, context)}
         for index, name in enumerate(steps):
             record = manifest.steps.get(name)
             valid = validators[name]()
             if record is None or record.status is not StepStatus.SUCCEEDED or not valid:
+                if self._is_visual_request(request) and record is not None and record.status is StepStatus.SUCCEEDED and name in {"probe-input", "parse-script", "render-artifacts"}:
+                    # Visual descriptors, normalized associations and plans are
+                    # evidence, not disposable cache: never silently adopt edits.
+                    raise _InputInvalid()
                 if record is not None and record.status is StepStatus.SUCCEEDED and self._invalid_producing_output(job, name, context):
                     self._store.update(job, lambda latest: self._reset_from(latest, steps, index))
                     raise _OutputInvalid()
@@ -285,10 +470,19 @@ class NarrateService:
     def _load_utterances(self, job: Path, context: dict[str, Any]) -> bool:
         try:
             if not self._state_fingerprint_valid(job, job / "work" / "utterances.json", "narrate-utterances-sha256"): return False
-            data = json.loads((job / "work" / "utterances.json").read_text(encoding="utf-8")); expected = self._script_ref(job).sha256
-            if set(data) != {"script_sha256", "utterances"} or data["script_sha256"] != expected or not isinstance(data["utterances"], list): return False
+            data = json.loads((job / "work" / "utterances.json").read_text(encoding="utf-8")); visual = self._is_visual_manifest(job)
+            expected = self._descriptor_ref(job).sha256 if visual and self._is_storyboard_manifest(job) else self._script_ref(job).sha256
+            expected_keys = {"descriptor_sha256", "utterances", "clips"} if visual and self._is_storyboard_manifest(job) else {"script_sha256", "utterances"}
+            digest_key = "descriptor_sha256" if visual and self._is_storyboard_manifest(job) else "script_sha256"
+            if set(data) != expected_keys or data[digest_key] != expected or not isinstance(data["utterances"], list): return False
             utterances = tuple(Utterance(**item) for item in data["utterances"])
             if not self._valid_utterances(utterances): return False
+            if visual and self._is_storyboard_manifest(job):
+                if not snapshot_valid(job / "inputs" / "storyboard.json", expected): return False
+                storyboard = parse_storyboard(Path(self._descriptor_ref(job).path))
+                mapped = storyboard_utterances(storyboard)
+                if data["clips"] != [{"id": group.clip.id, "utterance_indices": [item.index for item in group.utterances]} for group in mapped]: return False
+                context["clip_utterances"] = mapped
             context["utterances"], context["script_sha256"] = utterances, expected; return True
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError): return False
 
@@ -350,11 +544,20 @@ class NarrateService:
         except (OSError, ValueError):
             return False
 
-    def _render_artifacts_valid(self, job: Path) -> bool:
-        return self._artifacts_validator(job, include_preview=False) and self._artifact_valid(job, job / "outputs" / "subtitles.srt", "subtitles-srt") and self._artifact_valid(job, job / "outputs" / "subtitles.vtt", "subtitles-vtt")
+    def _render_artifacts_valid(self, job: Path, context: dict[str, Any]) -> bool:
+        extra = {"expected_utterances": len(self._require_utterances(context))} if self._visual_context(context) else {}
+        try: valid = self._artifacts_validator(job, include_preview=False, **extra)
+        except (TypeError, _InputInvalid): return False
+        if self._visual_context(context):
+            try: self._load_visual_plan(job, context)
+            except _InputInvalid: return False
+        return valid and self._artifact_valid(job, job / "outputs" / "subtitles.srt", "subtitles-srt") and self._artifact_valid(job, job / "outputs" / "subtitles.vtt", "subtitles-vtt")
 
-    def _preview_artifact_valid(self, job: Path) -> bool:
-        return self._artifacts_validator(job, include_preview=True) and self._render_artifacts_valid(job) and self._artifact_valid(job, job / "outputs" / "preview.mp4", "preview-mp4")
+    def _preview_artifact_valid(self, job: Path, context: dict[str, Any]) -> bool:
+        extra = {"expected_utterances": len(self._require_utterances(context))} if self._visual_context(context) else {}
+        try: valid = self._artifacts_validator(job, include_preview=True, **extra)
+        except (TypeError, _InputInvalid): return False
+        return valid and self._render_artifacts_valid(job, context) and self._artifact_valid(job, job / "outputs" / "preview.mp4", "preview-mp4")
 
     def _publish_output(self, job: Path, staged: Path, destination: Path, kind: str) -> None:
         self._safe_target(job, staged, "work"); self._safe_target(job, destination, "outputs")
@@ -404,7 +607,12 @@ class NarrateService:
         self._store.update(job, interrupt)
 
     @staticmethod
-    def _settings(request: NarrateRequest) -> dict[str, Any]: return {"speaker_name": _SPEAKER, "style_name": _STYLE, "speed_scale": 1.0, "silence_ms": 300, "max_utterance_codepoints": 60, "script_format": request.script_path.suffix.casefold(), "preview": request.preview}
+    def _settings(request: NarrateRequest | StoryboardRequest) -> dict[str, Any]:
+        if isinstance(request, StoryboardRequest):
+            return {"speaker_name": _SPEAKER, "style_name": _STYLE, "speed_scale": 1.0, "silence_ms": 300, "max_utterance_codepoints": 60, "input_kind": "storyboard", "preview": request.preview}
+        if NarrateService._is_image(request.input_path):
+            return {"speaker_name": _SPEAKER, "style_name": _STYLE, "speed_scale": 1.0, "silence_ms": 300, "max_utterance_codepoints": 60, "script_format": request.script_path.suffix.casefold(), "input_kind": "image", "preview": request.preview}
+        return {"speaker_name": _SPEAKER, "style_name": _STYLE, "speed_scale": 1.0, "silence_ms": 300, "max_utterance_codepoints": 60, "script_format": request.script_path.suffix.casefold(), "preview": request.preview}
     @staticmethod
     def _settings_match(actual: object, expected: dict[str, Any]) -> bool:
         return isinstance(actual, dict) and set(actual) == set(expected) and all(type(actual[key]) is type(expected[key]) and actual[key] == expected[key] for key in expected)
@@ -434,6 +642,21 @@ class NarrateService:
     def _require_utterances(context: dict[str, Any]) -> tuple[Utterance, ...]:
         if not NarrateService._valid_utterances(context.get("utterances")): raise _InputInvalid()
         return context["utterances"]
+    @staticmethod
+    def _is_image(path: Path) -> bool:
+        return Path(path).suffix.casefold() in {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+    @staticmethod
+    def _is_visual_request(request: NarrateRequest | StoryboardRequest) -> bool:
+        return isinstance(request, StoryboardRequest) or (isinstance(request, NarrateRequest) and NarrateService._is_image(request.input_path))
+    @staticmethod
+    def _visual_context(context: dict[str, Any]) -> bool:
+        return isinstance(context.get("visual"), dict)
+    def _is_storyboard_manifest(self, job: Path) -> bool:
+        try: return self._store.load(job, recover_interrupted=False).settings.get("input_kind") == "storyboard"
+        except (OSError, ValueError): return False
+    def _is_visual_manifest(self, job: Path) -> bool:
+        try: return self._store.load(job, recover_interrupted=False).settings.get("input_kind") in {"image", "storyboard"}
+        except (OSError, ValueError): return False
     def _staged_wavs(self, job: Path, utterances: Sequence[Utterance]) -> list[Path]:
         paths = [job / "work" / "utterances" / f"utterance-{item.index:04d}.wav" for item in utterances]
         for path in paths: self._safe_target(job, path, "work")
@@ -466,20 +689,32 @@ class NarrateService:
         manifest = self._store.load(job, recover_interrupted=False)
         if len(manifest.inputs) != 2: raise _InputInvalid()
         return manifest.inputs[1]
-    def _request_from_manifest(self, manifest: JobManifest, job: Path) -> NarrateRequest:
+    def _descriptor_ref(self, job: Path) -> InputRef:
+        manifest = self._store.load(job, recover_interrupted=False)
+        if not manifest.inputs: raise _InputInvalid()
+        return manifest.inputs[0]
+    def _request_from_manifest(self, manifest: JobManifest, job: Path) -> NarrateRequest | StoryboardRequest:
         try:
-            if len(manifest.inputs) != 2: raise ValueError
             preview = manifest.settings["preview"]
             if type(preview) is not bool: raise ValueError
-            request = NarrateRequest(Path(manifest.inputs[0].path), Path(manifest.inputs[1].path), manifest.name, job.parent, preview)
+            if manifest.settings.get("input_kind") == "storyboard":
+                request = StoryboardRequest(Path(manifest.inputs[0].path), manifest.name, job.parent, preview)
+            else:
+                if len(manifest.inputs) != 2: raise ValueError
+                request = NarrateRequest(Path(manifest.inputs[0].path), Path(manifest.inputs[1].path), manifest.name, job.parent, preview)
             self._validate_request(request); return request
         except (KeyError, TypeError, ValueError): raise _InputInvalid() from None
     @staticmethod
-    def _validate_request(request: NarrateRequest) -> None:
+    def _validate_request(request: NarrateRequest | StoryboardRequest) -> None:
+        if isinstance(request, StoryboardRequest):
+            if request.input_path.suffix.casefold() != ".json": raise ValueError("invalid narration request")
+            if parse_storyboard(request.input_path).music is not None and not request.preview: raise StoryboardMusicRequiresPreview()
+            return
         if not isinstance(request, NarrateRequest) or request.script_path.suffix.casefold() not in {".txt", ".md"}: raise ValueError("invalid narration request")
     @staticmethod
     def _validate_inputs(manifest: JobManifest) -> None:
-        if len(manifest.inputs) != 2: raise _InputInvalid()
+        storyboard = manifest.settings.get("input_kind") == "storyboard"
+        if (storyboard and len(manifest.inputs) < 2) or (not storyboard and len(manifest.inputs) != 2): raise _InputInvalid()
         try:
             if any(fingerprint_file(Path(item.path)) != item for item in manifest.inputs): raise _InputInvalid()
         except (OSError, ValueError): raise _InputInvalid() from None

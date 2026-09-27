@@ -4,7 +4,7 @@ import pytest
 
 from minoru_studio.cli import main
 from minoru_studio.narrate.models import DurationWarning
-from minoru_studio.narrate.service import NarrateFailed, NarrateInterrupted
+from minoru_studio.narrate.service import NarrateFailed, NarrateInterrupted, StoryboardMusicRequiresPreview
 
 
 def _create_arguments(tmp_path: Path) -> list[str]:
@@ -54,13 +54,14 @@ def test_resume_runs_service_and_prints_resolved_job_path(monkeypatch, tmp_path,
 
 
 @pytest.mark.parametrize("arguments", (
-    ["narrate", "input.mp4", "-Script", "script.md", "-Name", "demo"],
+    ["narrate", "input.mp4", "-Script", "script.md", "-Name", "demo", "-OutputDir", " "],
     ["narrate", "input.mp4", "-Script", "script.md", "-OutputDir", "jobs"],
     ["narrate", "input.mp4", "-Name", "demo", "-OutputDir", "jobs"],
     ["narrate", "input.mp4", "-Script", "script.md", "-Name", " ", "-OutputDir", "jobs"],
     ["narrate", "resume"],
     ["narrate", "resume", "job", "-Preview"],
     ["narrate", "resume", "job", "-Script", "script.md"],
+    ["narrate", "storyboard.json", "-Name", "demo", "-Script", "script.md"],
 ))
 def test_command_rejects_missing_or_create_only_resume_arguments(arguments):
     with pytest.raises(SystemExit) as raised:
@@ -86,3 +87,49 @@ def test_failure_and_interruption_have_stable_exit_codes(monkeypatch, tmp_path, 
     monkeypatch.setattr("minoru_studio.narrate.commands.NarrateService", lambda: InterruptedService())
     assert main(_create_arguments(tmp_path)) == 130
     assert capsys.readouterr().err.strip() == str(job_dir.resolve())
+
+
+@pytest.mark.parametrize("source,script,storyboard", [
+    ("image.PNG", "script.txt", False),
+    ("storyboard.json", None, True),
+])
+def test_new_media_inputs_use_external_default_and_one_core_service(monkeypatch, tmp_path, source, script, storyboard):
+    from minoru_studio.narrate.models import NarrateRequest, StoryboardRequest
+    calls = []
+    output = tmp_path / "user-videos"
+
+    class Service:
+        def create_and_run(self, request):
+            calls.append(request)
+            return output / "demo.media-job"
+
+    monkeypatch.setattr("minoru_studio.narrate.commands.NarrateService", lambda: Service())
+    monkeypatch.setattr("minoru_studio.narrate.commands.default_output_dir", lambda: output)
+    monkeypatch.setattr("minoru_studio.narrate.commands.read_duration_warning", lambda job: None)
+    args = ["narrate", source, "-Name", "demo", "-Preview"]
+    if script:
+        args += ["-Script", script]
+    assert main(args) == 0
+    assert isinstance(calls[0], StoryboardRequest if storyboard else NarrateRequest)
+    assert calls[0].output_dir == output.resolve()
+    assert calls[0].preview is True
+
+
+def test_invalid_storyboard_does_not_echo_private_content(monkeypatch, capsys):
+    class Service:
+        def create_and_run(self, request):
+            raise ValueError("private script text")
+
+    monkeypatch.setattr("minoru_studio.narrate.commands.NarrateService", lambda: Service())
+    assert main(["narrate", "storyboard.json", "-Name", "demo"]) == 1
+    assert capsys.readouterr().err.strip() == "input validation"
+
+
+def test_storyboard_music_without_preview_explains_the_required_option(monkeypatch, capsys):
+    class Service:
+        def create_and_run(self, request):
+            raise StoryboardMusicRequiresPreview()
+
+    monkeypatch.setattr("minoru_studio.narrate.commands.NarrateService", lambda: Service())
+    assert main(["narrate", "storyboard.json", "-Name", "demo"]) == 1
+    assert capsys.readouterr().err.strip() == "storyboard music requires -Preview"

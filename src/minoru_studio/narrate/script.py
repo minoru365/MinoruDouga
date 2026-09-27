@@ -15,6 +15,9 @@ _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _LINK_ONLY = re.compile(r"^(?:!\[\]\([^)]*\)|\[\]\([^)]*\)|\[[^]]+\]\([^)]*\))$")
 _EXCLUDED_PREFIXES = ("画面の説明", "操作")
 _TERMINATORS = frozenset("。！？.!?")
+_OPEN_BRACKETS = frozenset("「『（(【")
+_CLOSE_BRACKETS = frozenset("」』）)】")
+_QUOTATIVE_PARTICLES = ("と", "って")
 
 
 def parse_script(path: Path) -> tuple[Utterance, ...]:
@@ -24,10 +27,17 @@ def parse_script(path: Path) -> tuple[Utterance, ...]:
         raise ValueError("script must have a .txt or .md suffix")
     lines = source.read_text(encoding="utf-8").splitlines()
     content = [_normalize_text_lines(lines)] if suffix == ".txt" else _narration_lines(lines)
-    utterance_texts = [piece for line in content for piece in _split_line(line)]
+    utterance_texts = [piece for line in content for piece in segment_narration(line)]
     if not utterance_texts:
         raise ValueError("script contains no narration")
     return tuple(Utterance(index, text) for index, text in enumerate(utterance_texts, 1))
+
+
+def segment_narration(text: str) -> tuple[str, ...]:
+    """Apply the public narration sentence/length rules to descriptor text."""
+    if not isinstance(text, str):
+        raise ValueError("narration must be text")
+    return tuple(_split_line(text))
 
 
 def snapshot_script(source: Path, inputs_dir: Path) -> Path:
@@ -90,12 +100,37 @@ def _split_line(line: str) -> list[str]:
         return []
     sentences: list[str] = []
     start = 0
+    depth = 0
+    quote_has_terminator = False
     for index, character in enumerate(stripped):
-        if character in _TERMINATORS:
-            sentences.append(stripped[start : index + 1].strip())
-            start = index + 1
-            while start < len(stripped) and stripped[start].isspace():
-                start += 1
+        following = stripped[index + 1 :]
+        if character in _OPEN_BRACKETS:
+            if depth == 0:
+                quote_has_terminator = False
+            depth += 1
+            continue
+        if character in _CLOSE_BRACKETS and depth:
+            depth -= 1
+            # A quoted utterance ends the sentence unless a quotative particle continues it;
+            # adjacent quotes are separate lines of dialogue.
+            if depth:
+                continue
+            if following[:1] not in _OPEN_BRACKETS and (
+                not quote_has_terminator or following.startswith(_QUOTATIVE_PARTICLES)
+            ):
+                continue
+        elif character in _TERMINATORS:
+            if depth:
+                quote_has_terminator = True
+                continue
+            if following[:1] in _TERMINATORS:
+                continue
+        else:
+            continue
+        sentences.append(stripped[start : index + 1].strip())
+        start = index + 1
+        while start < len(stripped) and stripped[start].isspace():
+            start += 1
     if remaining := stripped[start:].strip():
         sentences.append(remaining)
     return [chunk for sentence in sentences for chunk in _split_length(sentence)]

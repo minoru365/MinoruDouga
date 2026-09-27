@@ -56,6 +56,25 @@ def test_txt_retains_punctuation_and_counts_emoji_as_unicode_code_points(tmp_pat
     assert texts(source) == ("🙂" * 60, "🙂。")
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("二人は、「はーい！」と答えました。", ("二人は、「はーい！」と答えました。",)),
+        ("「ご飯よー！ 来なさい！」二人は走りました。", ("「ご飯よー！ 来なさい！」", "二人は走りました。")),
+        ("「えっ!?」お母さんは倒れました。", ("「えっ!?」", "お母さんは倒れました。")),
+        ("『本当に？』って聞きました。", ("『本当に？』って聞きました。",)),
+        ("妹は「たべっ子うさぎ」を買いました。", ("妹は「たべっ子うさぎ」を買いました。",)),
+        ("「ごめんなさい。許して」でも姉は怒りました。", ("「ごめんなさい。許して」", "でも姉は怒りました。")),
+        ("えーっ!? びっくり！！", ("えーっ!?", "びっくり！！")),
+        ("「痛いよ」「大丈夫？」と姉が言いました。", ("「痛いよ」", "「大丈夫？」と姉が言いました。")),
+        ("閉じない「括弧。でも続く。", ("閉じない「括弧。でも続く。",)),
+        ("余分な」閉じ。次。", ("余分な」閉じ。", "次。")),
+    ],
+)
+def test_segment_narration_keeps_quoted_terminators_and_terminator_runs_together(text: str, expected: tuple[str, ...]):
+    assert script_module.segment_narration(text) == expected
+
+
 def test_markdown_reads_only_narration_sections_in_document_order(tmp_path: Path):
     source = write_script(
         tmp_path,

@@ -19,11 +19,42 @@ test/
 *.wav
 *.mp3
 *.srt
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[wW][aA][vV]
+*.[mM][pP]3
+*.mkv
+*.webm
+*.avi
+*.m4v
+*.flac
+*.ogg
+*.vtt
+*.[pP][nN][gG]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[wW][eE][bB][pP]
+*.bmp
+*.tif
+*.tiff
 # ただしドキュメント用素材は許可
 !img/**
 
+# ジョブ全体（台本・個人パス・ログ・中間画像も含む）を公開しない
+*.media-job/
+/jobs/
+/outputs/
+/artifacts/
+/paper_video_work/
+
+# 個別制作で残ったローカル専用スクリプト・台本
+/make_paper_video.py
+/make_*_story.ps1
+/*_story_*.txt
+
 # Claude Code のローカル設定(マシン固有の許可設定など)
 .claude/settings.local.json
+.claude/settings.json
 
 # OS / エディタ
 Thumbs.db

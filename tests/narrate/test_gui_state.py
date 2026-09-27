@@ -28,3 +28,19 @@ def test_form_values_reject_blank_required_fields(field):
 def test_form_values_require_a_real_boolean_preview(preview):
     with pytest.raises(ValueError):
         NarrateFormValues("input.mp4", "script.md", "demo", "jobs", preview).to_request()
+
+
+def test_storyboard_form_uses_inline_narration_and_rejects_an_extra_script():
+    from minoru_studio.narrate.models import StoryboardRequest
+    request = NarrateFormValues(" sequence.json ", "", " demo ", " jobs ", True).to_request()
+    assert isinstance(request, StoryboardRequest)
+    assert request.input_path == Path("sequence.json")
+    assert request.preview is True
+    with pytest.raises(ValueError, match="leave script blank"):
+        NarrateFormValues("sequence.json", "another.txt", "demo", "jobs", True).to_request()
+
+
+def test_single_image_form_retains_explicit_script():
+    request = NarrateFormValues("picture.png", "script.txt", "demo", "jobs", True).to_request()
+    assert request.input_path == Path("picture.png")
+    assert request.script_path == Path("script.txt")
